@@ -20,16 +20,16 @@ class MetricsResult:
     wasserstein_1: Optional[float] = None
 
 
-def concordance_index_fast(event_times: torch.Tensor,
-                           event_indicators: torch.Tensor,
-                           risk_scores: torch.Tensor) -> float:
+def concordance_index_pytorch(risk_scores: torch.Tensor,
+                              event_times: torch.Tensor,
+                              event_indicators: torch.Tensor) -> float:
     """
-    快速计算 C-index（向量化实现，基于 PyTorch GPU）
+    快速计算 C-index (向量化实现, 基于 PyTorch GPU)
     
     参数:
+        risk_scores: (N,) 风险分数 (越高代表风险越大)
         event_times: (N,) 发生时间张量
         event_indicators: (N,) 事件指示器 (1=事件, 0=删失)
-        risk_scores: (N,) 风险分数 (越高代表风险越大)
     """
     n = len(event_times)
     if n == 0:
@@ -48,7 +48,7 @@ def concordance_index_fast(event_times: torch.Tensor,
     permissible = torch.tensor(0.0, device=device)
     
     # 向量化计算改进：
-    # 只有当 event_times[i] < event_times[j] 且 event_indicators[i]==1 时，(i, j) 才是可比较对
+    # 只有当 event_times[i] < event_times[j] 且 event_indicators[i]==1 时, (i, j) 才是可比较对
     for i in range(n):
         if event_indicators[i] == 0:
             continue
@@ -277,7 +277,7 @@ def median_time_error(true_medians: torch.Tensor,
 def hazard_mse(true_hazard: torch.Tensor,
                pred_hazard: torch.Tensor) -> float:
     """
-    计算风险函数 MSE（带数值稳定性保护）
+    计算对数风险函数 MSE (Log-Hazard MSE)
     """
     if true_hazard is None or pred_hazard is None:
         return float('nan')
@@ -287,15 +287,17 @@ def hazard_mse(true_hazard: torch.Tensor,
         true_hazard = true_hazard[:, :min_cols]
         pred_hazard = pred_hazard[:, :min_cols]
     
-    true_clamped = torch.clamp(true_hazard, min=0.0, max=1000.0)
-    pred_clamped = torch.clamp(pred_hazard, min=0.0, max=1000.0)
+    # 增加 epsilon 防止 log(0), 并在对数空间计算
+    eps = 1e-9
+    true_log = torch.log(torch.clamp(true_hazard, min=0.0) + eps)
+    pred_log = torch.log(torch.clamp(pred_hazard, min=0.0) + eps)
     
-    return torch.mean((true_clamped - pred_clamped)**2).item()
+    return torch.mean((true_log - pred_log)**2).item()
 
 
 def hazard_mae(true_hazard: torch.Tensor,
                pred_hazard: torch.Tensor) -> float:
-    """计算风险函数 MAE（带数值稳定性保护）"""
+    """计算对数风险函数 MAE (Log-Hazard MAE)"""
     if true_hazard is None or pred_hazard is None:
         return float('nan')
     
@@ -304,17 +306,18 @@ def hazard_mae(true_hazard: torch.Tensor,
         true_hazard = true_hazard[:, :min_cols]
         pred_hazard = pred_hazard[:, :min_cols]
     
-    true_clamped = torch.clamp(true_hazard, min=0.0, max=1000.0)
-    pred_clamped = torch.clamp(pred_hazard, min=0.0, max=1000.0)
+    eps = 1e-9
+    true_log = torch.log(torch.clamp(true_hazard, min=0.0) + eps)
+    pred_log = torch.log(torch.clamp(pred_hazard, min=0.0) + eps)
     
-    return torch.mean(torch.abs(true_clamped - pred_clamped)).item()
+    return torch.mean(torch.abs(true_log - pred_log)).item()
 
 
 def hazard_integrated_absolute_error(true_hazard: torch.Tensor,
                                      pred_hazard: torch.Tensor,
                                      time_grid: torch.Tensor) -> float:
     """
-    计算风险函数积分绝对误差 (IAE)（带数值稳定性保护）
+    计算对数风险函数积分绝对误差 (Log-IAE)
     """
     if true_hazard is None or pred_hazard is None:
         return float('nan')
@@ -325,10 +328,11 @@ def hazard_integrated_absolute_error(true_hazard: torch.Tensor,
         pred_hazard = pred_hazard[:, :min_cols]
         time_grid = time_grid[:min_cols]
     
-    true_clamped = torch.clamp(true_hazard, min=0.0, max=1000.0)
-    pred_clamped = torch.clamp(pred_hazard, min=0.0, max=1000.0)
+    eps = 1e-9
+    true_log = torch.log(torch.clamp(true_hazard, min=0.0) + eps)
+    pred_log = torch.log(torch.clamp(pred_hazard, min=0.0) + eps)
     
-    abs_diff = torch.abs(true_clamped - pred_clamped)
+    abs_diff = torch.abs(true_log - pred_log)
     
     iae_per_sample = torch.trapezoid(abs_diff, time_grid, dim=1)
     
@@ -337,7 +341,7 @@ def hazard_integrated_absolute_error(true_hazard: torch.Tensor,
 
 def density_mse(true_density: torch.Tensor,
                 pred_density: torch.Tensor) -> float:
-    """计算密度函数 MSE（带数值稳定性保护）"""
+    """计算密度函数 MSE (带数值稳定性保护)"""
     if true_density is None or pred_density is None:
         return float('nan')
     
@@ -354,7 +358,7 @@ def density_mse(true_density: torch.Tensor,
 
 def density_mae(true_density: torch.Tensor,
                 pred_density: torch.Tensor) -> float:
-    """计算密度函数 MAE（带数值稳定性保护）"""
+    """计算密度函数 MAE (带数值稳定性保护)"""
     if true_density is None or pred_density is None:
         return float('nan')
     
@@ -431,7 +435,7 @@ def compute_all_metrics(times: Union[torch.Tensor, np.ndarray, None],
     pred_hazard = to_tensor(pred_hazard, device)
     pred_density = to_tensor(pred_density, device)
 
-    c_index = concordance_index_fast(times, events, risk_scores)
+    c_index = concordance_index_pytorch(risk_scores, times, events)
     
     ibs = integrated_brier_score(times, events, pred_survival, time_grid, max_weight)
     

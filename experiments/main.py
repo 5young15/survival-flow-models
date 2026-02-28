@@ -1,13 +1,20 @@
 """
 FlowSurv / GumbelFlowSurv Simulation Experiments
 ================================================
-主入口脚本，用于运行完整的仿真实验
+主入口脚本, 用于运行完整的仿真实验
 """
 
+import torch
 import os
+import sys
 import argparse
 import json
 from datetime import datetime
+from typing import List, Optional
+
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from experiments.config import CONFIG, print_config_summary
 from experiments.run_experiments import (
@@ -43,7 +50,7 @@ def main():
 
     print_config_summary()
 
-    n_repeats = 2 if args.quick else (10 if args.full else CONFIG.training.n_repeats)
+    n_repeats = 2 if args.quick else (10 if args.full else CONFIG.experiment.n_repeats)
 
     model_names = args.models
     if model_names is None:
@@ -54,7 +61,7 @@ def main():
     print(f"  - 重复次数: {n_repeats}")
     print(f"  - 模型列表: {model_names}")
     print(f"  - 输出目录: {args.output}")
-    print(f"  - 检查点目录: {args.checkpoint or f'{args.output}/checkpoints'}")
+    print(f"  - 检查点目录: {args.checkpoint or 'checkpoints'}")
     print()
 
     results = run_all_experiments(

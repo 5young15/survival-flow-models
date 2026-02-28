@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from experiments.config import (
     GlobalConfig, CONFIG, get_model_config,
-    ExperimentGroup, DataConfig, TrainingConfig
+    ExperimentGroup, DataConfig
 )
 from experiments.data_generation import (
     SurvivalDataGenerator, SurvivalData, generate_experiment_data
@@ -30,7 +30,7 @@ class ModelTrainer:
         self.model_name = model_name
         self.config = config
         self.model_config = get_model_config(model_name, config.model)
-        self.device = config.training.device
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = None
 
     def create_model(self, in_dim: int):
@@ -103,7 +103,7 @@ class PyTorchModelTrainer(ModelTrainer):
         torch.save(checkpoint, checkpoint_path)
 
     def load_checkpoint(self, checkpoint_path: str) -> bool:
-        """加载模型检查点，返回是否成功"""
+        """加载模型检查点, 返回是否成功"""
         if not os.path.exists(checkpoint_path):
             return False
 
@@ -125,7 +125,7 @@ class PyTorchModelTrainer(ModelTrainer):
         return True
 
     def train(self, train_data: SurvivalData, val_data: SurvivalData,
-              checkpoint_dir: str = None, repeat_id: int = 0) -> Tuple[float, bool]:
+              checkpoint_dir: Optional[str] = None, repeat_id: int = 0) -> Tuple[float, bool]:
         """
         训练模型
 
@@ -148,20 +148,9 @@ class PyTorchModelTrainer(ModelTrainer):
             checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
             return checkpoint['best_val_loss'], True
 
-        train_config = self.config.training
         model_config = self.model_config
 
-        optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=model_config.get('LR', train_config.lr),
-            weight_decay=model_config.get('WEIGHT_DECAY', train_config.weight_decay)
-        )
-
-        batch_size = model_config.get('BATCH_SIZE', train_config.batch_size)
-        epochs = model_config.get('EPOCHS', train_config.epochs)
-        patience = model_config.get('PATIENCE', train_config.patience)
-
-        # 统一为 Tensor 并移动到设备，避免重复创建
+        # 统一为 Tensor 并移动到设备, 避免重复创建
         def to_device_tensor(x, dtype=torch.float32):
             if isinstance(x, torch.Tensor):
                 return x.to(self.device, dtype=dtype)
@@ -178,61 +167,98 @@ class PyTorchModelTrainer(ModelTrainer):
 
         if hasattr(self.model, 'init_gumbel_params') and hasattr(self.model, '_gumbel_initialized'):
             if not self.model._gumbel_initialized:
-                # 某些模型初始化需要 numpy，如果已经转换过，传 Tensor 也是安全的
+                # 某些模型初始化需要 numpy, 如果已经转换过, 传 Tensor 也是安全的
                 self.model.init_gumbel_params(times_tensor, events_tensor)
 
         val_times = to_device_tensor(val_data.times)
         val_events = to_device_tensor(val_data.events)
         val_features = to_device_tensor(val_data.features)
 
-        best_val_loss = float('inf')
-        patience_counter = 0
-        best_state = None
+        def train_stage(stage: str, epochs: int, lr: float, batch_size: int, patience: int, weight_decay: float):
+            if hasattr(self.model, 'set_stage'):
+                self.model.set_stage(stage)
 
-        n_samples = len(train_data.times)
+            params = [p for p in self.model.parameters() if p.requires_grad]
+            optimizer = torch.optim.Adam(
+                params,
+                lr=lr,
+                weight_decay=weight_decay
+            )
 
-        for epoch in range(epochs):
-            self.model.train()
-            indices = torch.randperm(n_samples, device=self.device)
-            epoch_loss = 0.0
-            n_batches = 0
+            best_val_loss = float('inf')
+            patience_counter = 0
+            best_state = None
 
-            for i in range(0, n_samples, batch_size):
-                batch_idx = indices[i:i+batch_size]
+            n_samples = len(train_data.times)
 
-                batch_features = features_tensor.index_select(0, batch_idx)
-                batch_times = times_tensor.index_select(0, batch_idx)
-                batch_events = events_tensor.index_select(0, batch_idx)
+            for _ in range(epochs):
+                self.model.train()
+                indices = torch.randperm(n_samples, device=self.device)
 
-                optimizer.zero_grad(set_to_none=True)
-                loss, loss_dict = self.model.forward_loss(
-                    batch_features, batch_times, batch_events
+                for i in range(0, n_samples, batch_size):
+                    batch_idx = indices[i:i + batch_size]
+
+                    batch_features = features_tensor.index_select(0, batch_idx)
+                    batch_times = times_tensor.index_select(0, batch_idx)
+                    batch_events = events_tensor.index_select(0, batch_idx)
+
+                    optimizer.zero_grad(set_to_none=True)
+                    loss, _ = self.model.forward_loss(
+                        batch_features, batch_times, batch_events
+                    )
+                    loss.backward()
+                    optimizer.step()
+
+                self.model.eval()
+                with torch.no_grad():
+                    val_loss_tensor, _ = self.model.forward_loss(
+                        val_features, val_times, val_events
+                    )
+                    val_loss = val_loss_tensor.item()
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                else:
+                    patience_counter += 1
+
+                if patience_counter >= patience:
+                    break
+
+            if best_state is not None:
+                self.model.load_state_dict(best_state)
+            return best_val_loss
+
+        if self.model_name in {'GumbelFlowSurv', 'GumbelFlow', 'GFM'} and hasattr(self.model, 'set_stage'):
+            weibull_epochs = model_config.get('WEIBULL_EPOCHS', 200)
+            if weibull_epochs > 0:
+                train_stage(
+                    stage='weibull',
+                    epochs=weibull_epochs,
+                    lr=model_config.get('WEIBULL_LR', 5e-8),
+                    batch_size=model_config.get('WEIBULL_BATCH_SIZE', 64),
+                    patience=model_config.get('WEIBULL_PATIENCE', 15),
+                    weight_decay=model_config.get('WEIBULL_WEIGHT_DECAY', 1e-5),
                 )
-                loss.backward()
-                optimizer.step()
 
-                epoch_loss += loss.item()
-                n_batches += 1
-
-            self.model.eval()
-            with torch.no_grad():
-                val_loss_tensor, _ = self.model.forward_loss(
-                    val_features, val_times, val_events
-                )
-                val_loss = val_loss_tensor.item()
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-                best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
-            else:
-                patience_counter += 1
-
-            if patience_counter >= patience:
-                break
-
-        if best_state is not None:
-            self.model.load_state_dict(best_state)
+            best_val_loss = train_stage(
+                stage='flow',
+                epochs=model_config.get('EPOCHS', 200),
+                lr=model_config.get('LR', 3e-4),
+                batch_size=model_config.get('BATCH_SIZE', 64),
+                patience=model_config.get('PATIENCE', 15),
+                weight_decay=model_config.get('WEIGHT_DECAY', 1e-5),
+            )
+        else:
+            best_val_loss = train_stage(
+                stage='flow',
+                epochs=model_config.get('EPOCHS', 200),
+                lr=model_config.get('LR', 3e-4),
+                batch_size=model_config.get('BATCH_SIZE', 64),
+                patience=model_config.get('PATIENCE', 15),
+                weight_decay=model_config.get('WEIGHT_DECAY', 1e-5),
+            )
 
         if hasattr(self.model, '_fit_baseline_hazard'):
             with torch.no_grad():
@@ -329,7 +355,7 @@ class RSFTrainer(ModelTrainer):
         return True
 
     def train(self, train_data: SurvivalData, val_data: SurvivalData,
-              checkpoint_dir: str = None, repeat_id: int = 0) -> Tuple[float, bool]:
+              checkpoint_dir: Optional[str] = None, repeat_id: int = 0) -> Tuple[float, bool]:
         checkpoint_path = self.get_checkpoint_path(checkpoint_dir, repeat_id) if checkpoint_dir else None
 
         if checkpoint_path and self.load_checkpoint(checkpoint_path):
@@ -391,10 +417,14 @@ def run_single_experiment(
     model_name: str,
     repeat_id: int,
     config: GlobalConfig,
-    checkpoint_dir: str = None
+    checkpoint_dir: Optional[str] = None,
+    device: Optional[torch.device] = None
 ) -> Tuple[MetricsResult, Dict[str, np.ndarray], Dict[str, Any]]:
     """运行单次实验"""
-
+    
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     seed = group.data_config.random_seed + repeat_id * 100
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -406,8 +436,10 @@ def run_single_experiment(
     full_data = generator.generate(n=data_config.n_samples, seed=seed)
 
     n = len(full_data.times)
-    n_test = int(n * 0.2)
-    n_val = int((n - n_test) * 0.1)
+    test_ratio = config.experiment.test_ratio
+    val_ratio = config.experiment.val_ratio
+    n_test = int(n * test_ratio)
+    n_val = int((n - n_test) * val_ratio)
 
     indices = np.random.permutation(n)
     test_idx = indices[:n_test]
@@ -416,8 +448,6 @@ def run_single_experiment(
 
     true_medians_np = generator.generator.median(full_data.features[test_idx])
 
-    # 将数据转换为 Tensor 并移动到设备
-    device = config.training.device
     full_data = full_data.to(device)
     true_medians = torch.from_numpy(true_medians_np).float().to(device)
 
@@ -484,12 +514,13 @@ def run_single_experiment(
 
 def run_all_experiments(
     config: GlobalConfig,
-    model_names: List[str] = None,
-    group_names: List[str] = None,
-    n_repeats: int = None,
+    model_names: Optional[List[str]] = None,
+    group_names: Optional[List[str]] = None,
+    n_repeats: Optional[int] = None,
     save_results: bool = True,
-    output_dir: str = None,
-    checkpoint_dir: str = None
+    output_dir: Optional[str] = None,
+    checkpoint_dir: Optional[str] = None,
+    device: Optional[torch.device] = None
 ) -> Dict[str, Any]:
     """运行所有实验"""
 
@@ -502,17 +533,20 @@ def run_all_experiments(
         groups = [g for g in config.experiment.groups if g.name in group_names]
 
     if n_repeats is None:
-        n_repeats = config.training.n_repeats
+        n_repeats = config.experiment.n_repeats
 
     if output_dir is None:
         output_dir = config.experiment.output_dir
 
     if checkpoint_dir is None:
-        checkpoint_dir = os.path.join(output_dir, 'checkpoints')
+        checkpoint_dir = 'checkpoints'
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     all_results = {}
 
     total_runs = len(groups) * len(model_names) * n_repeats
@@ -527,7 +561,7 @@ def run_all_experiments(
             for repeat_id in range(n_repeats):
                 try:
                     metrics, predictions, info = run_single_experiment(
-                        group, model_name, repeat_id, config, checkpoint_dir
+                        group, model_name, repeat_id, config, checkpoint_dir, device
                     )
 
                     model_results.append({
@@ -625,8 +659,9 @@ if __name__ == "__main__":
 
     config = CONFIG
 
-    print(f"\nDevice: {config.training.device}")
-    print(f"Number of repeats: {config.training.n_repeats}")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"\nDevice: {device}")
+    print(f"Number of repeats: {config.experiment.n_repeats}")
     print(f"Number of experiment groups: {len(config.experiment.groups)}")
     print(f"Number of models: {len(config.model.configs)}")
 

@@ -40,21 +40,6 @@ class DataConfig:
 
 
 @dataclass
-class TrainingConfig:
-    """训练配置"""
-    device: torch.device = field(default_factory=lambda: torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-    batch_size: int = 64
-    epochs: int = 200
-    patience: int = 15
-    lr: float = 3e-4
-    weight_decay: float = 1e-5
-    val_ratio: float = 0.1
-    test_ratio: float = 0.2
-    n_repeats: int = 10
-    ode_steps: int = 50
-
-
-@dataclass
 class ModelConfig:
     """
     模型超参数配置
@@ -69,18 +54,18 @@ class ModelConfig:
             'penalizer': 1e-5,
         },
         'DeepSurv': {
-            'hidden_dims': [32, 16, 8],
+            'hidden_dims': [64, 32, 16, 8],
             'dropout': 0.1,
-            'LR': 3e-4,
+            'LR': 8e-5,
             'BATCH_SIZE': 64,
             'EPOCHS': 200,
-            'PATIENCE': 15,
+            'PATIENCE': 10,
             'WEIGHT_DECAY': 1e-5,
         },
         'WeibullAFT': {
             'hidden_dims': [32, 16],
             'dropout': 0.0,
-            'LR': 3e-4,
+            'LR': 5e-8,
             'BATCH_SIZE': 64,
             'EPOCHS': 200,
             'PATIENCE': 15,
@@ -94,55 +79,58 @@ class ModelConfig:
             'random_state': 42,
         },
         'DeepHit': {
-            'hidden_dims': [32, 16],
+            'hidden_dims': [32, 16, 8],
             'dropout': 0.1,
             'n_time_bins': 50,
-            'LR': 3e-4,
+            'LR': 5e-8,
             'BATCH_SIZE': 64,
             'EPOCHS': 200,
-            'PATIENCE': 15,
+            'PATIENCE': 10,
             'WEIGHT_DECAY': 1e-5,
         },
         'FlowSurv': {
-            'vf_hidden_dims': [32, 16],
-            'tau_dim': 16,
+            'vf_hidden_dims': [32, 16, 8],
+            'tau_dim': 32,
             'encoder_hidden': [32, 16],
             'film_hidden': [16],
             'sigma': 0.1,
-            'dropout': 0.0,
-            'LR': 3e-4,
+            'dropout': 0.1,
+            'LR': 8e-5,
             'BATCH_SIZE': 64,
             'EPOCHS': 200,
-            'PATIENCE': 15,
+            'PATIENCE': 10,
             'WEIGHT_DECAY': 1e-5,
-            'n_samples': 128,
-            'ode_steps': 50,
-            'solver': 'rk4',
+            'n_samples': 256,
+            'ode_steps': 100,
+            'solver': 'euler',
             'truncated_samples': 32,
-            'weight_event': 0.5,
+            'weight_event': 2.0,
             'weight_censored': 1.0,
         },
         'GumbelFlowSurv': {
-            'vf_hidden_dims': [32, 16],
-            'tau_dim': 16,
+            'vf_hidden_dims': [32, 16, 8],
+            'tau_dim': 32,
             'encoder_hidden': [32, 16],
             'film_hidden': [16],
-            'gumbel_alpha_head_hidden': [8],
-            'gumbel_beta_head_hidden': [8],
+            'weibull_head_hidden': [16],
             'sigma': 0.1,
-            'dropout': 0.0,
-            'LR': 3e-4,
+            'dropout': 0.1,
+            'LR': 1e-4,
             'BATCH_SIZE': 64,
             'EPOCHS': 200,
-            'PATIENCE': 15,
+            'PATIENCE': 10,
             'WEIGHT_DECAY': 1e-5,
-            'n_samples': 128,
-            'ode_steps': 50,
-            'solver': 'rk4',
+            'WEIBULL_LR': 5e-8,
+            'WEIBULL_EPOCHS': 200,
+            'WEIBULL_BATCH_SIZE': 64,
+            'WEIBULL_PATIENCE': 15,
+            'WEIBULL_WEIGHT_DECAY': 1e-5,
+            'n_samples': 256,
+            'ode_steps': 100,
+            'solver': 'euler',
             'truncated_samples': 32,
-            'weight_event': 0.5,
-            'weight_censored': 1.0,
-            'weight_gumbel': 2.0,
+            'weight_event': 1.0,
+            'weight_censored': 2.0,
         },
     })
 
@@ -200,139 +188,139 @@ def _create_default_groups() -> List[ExperimentGroup]:
     # ==================== 基础场景 ====================
     e1_data = DataConfig(
         n_samples=2000, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.4,
+        noise_std=0.1, censoring_rate=0.3,
         distribution_type="weibull_single", is_ph=True,
         random_seed=42
     )
     groups.append(ExperimentGroup(
-        name="E1_PH_Baseline",
-        description="PH场景，Weibull单峰，常规删失",
+        name="E1",
+        description="PH场景, Weibull单峰, 常规删失",
         data_config=e1_data, is_nph=False
     ))
     
     e2_data = DataConfig(
         n_samples=2000, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.4,
+        noise_std=0.1, censoring_rate=0.3,
         distribution_type="weibull_mixture", is_ph=False,
         weibull_k1=1.5, weibull_k2=3.5,
         random_seed=52
     )
     groups.append(ExperimentGroup(
-        name="E2_NPH_Standard",
-        description="NPH场景，Weibull混合，常规删失",
+        name="E2",
+        description="NPH场景, Weibull混合, 常规删失",
         data_config=e2_data, is_nph=True
     ))
     
     # ==================== 高删失场景 ====================
     e3_data = DataConfig(
         n_samples=2000, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.70,
+        noise_std=0.1, censoring_rate=0.7,
         distribution_type="weibull_mixture", is_ph=False,
         weibull_k1=1.5, weibull_k2=3.5,
         random_seed=62
     )
     groups.append(ExperimentGroup(
-        name="E3_NPH_HighCensoring",
-        description="NPH场景，Weibull混合，高删失70%",
+        name="E3",
+        description="NPH场景, Weibull混合, 高删失70%",
         data_config=e3_data, is_nph=True, is_high_censoring=True
     ))
     
     # ==================== 多峰密度场景 ====================
     e4_data = DataConfig(
         n_samples=2000, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.4,
+        noise_std=0.1, censoring_rate=0.3,
         distribution_type="gaussian_mixture", is_ph=False,
         gaussian_mu1_base=1.5, gaussian_mu2_base=4.0,
         gaussian_sigma1=0.4, gaussian_sigma2=0.6,
         random_seed=72
     )
     groups.append(ExperimentGroup(
-        name="E4_MultiModal",
-        description="多峰密度，高斯混合",
+        name="E4",
+        description="多峰密度, 高斯混合",
         data_config=e4_data, is_nph=True
     ))
     
     # ==================== 小样本场景 ====================
     e5_data = DataConfig(
         n_samples=500, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.5,
+        noise_std=0.1, censoring_rate=0.3,
         distribution_type="weibull_mixture", is_ph=False,
         weibull_k1=1.5, weibull_k2=3.5,
         random_seed=82
     )
     groups.append(ExperimentGroup(
-        name="E5_SmallSample",
-        description="小样本500，NPH场景",
+        name="E5",
+        description="小样本500, NPH场景",
         data_config=e5_data, is_nph=True, is_small_sample=True
     ))
     
     # ==================== 高噪声场景 ====================
     e6_data = DataConfig(
         n_samples=2000, n_features=10, n_signal_features=2,
-        noise_std=0.5, censoring_rate=0.5,
+        noise_std=0.5, censoring_rate=0.3,
         distribution_type="weibull_mixture", is_ph=False,
         weibull_k1=1.5, weibull_k2=3.5,
         random_seed=92
     )
     groups.append(ExperimentGroup(
-        name="E6_HighNoise",
-        description="高维噪声(10维)，高噪声强度",
+        name="E6",
+        description="高维噪声(10维), 高噪声强度",
         data_config=e6_data, is_nph=True, is_high_noise=True
     ))
     
     # ==================== 大样本场景 (5000) ====================
     e7_data = DataConfig(
         n_samples=5000, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.4,
+        noise_std=0.1, censoring_rate=0.3,
         distribution_type="weibull_mixture", is_ph=False,
         weibull_k1=1.5, weibull_k2=3.5,
         random_seed=102
     )
     groups.append(ExperimentGroup(
-        name="E7_LargeSample_5K",
-        description="大样本5000，NPH场景",
+        name="E7",
+        description="大样本5000, NPH场景",
         data_config=e7_data, is_nph=True
     ))
     
     # ==================== 大样本场景 (10000) ====================
     e8_data = DataConfig(
         n_samples=10000, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.4,
+        noise_std=0.1, censoring_rate=0.3,
         distribution_type="weibull_mixture", is_ph=False,
         weibull_k1=1.5, weibull_k2=3.5,
         random_seed=112
     )
     groups.append(ExperimentGroup(
-        name="E8_LargeSample_10K",
-        description="大样本10000，NPH场景",
+        name="E8",
+        description="大样本10000, NPH场景",
         data_config=e8_data, is_nph=True
     ))
     
     # ==================== 大样本高删失场景 (5000, 70%) ====================
     e9_data = DataConfig(
         n_samples=5000, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.70,
+        noise_std=0.1, censoring_rate=0.7,
         distribution_type="weibull_mixture", is_ph=False,
         weibull_k1=1.5, weibull_k2=3.5,
         random_seed=122
     )
     groups.append(ExperimentGroup(
-        name="E9_LargeSample_HighCensoring_5K",
-        description="大样本5000，高删失70%，NPH场景",
+        name="E9",
+        description="大样本5000, 高删失70%, NPH场景",
         data_config=e9_data, is_nph=True, is_high_censoring=True
     ))
     
     # ==================== 大样本高删失场景 (10000, 70%) ====================
     e10_data = DataConfig(
         n_samples=10000, n_features=5, n_signal_features=2,
-        noise_std=0.1, censoring_rate=0.70,
+        noise_std=0.1, censoring_rate=0.7,
         distribution_type="weibull_mixture", is_ph=False,
         weibull_k1=1.5, weibull_k2=3.5,
         random_seed=132
     )
     groups.append(ExperimentGroup(
-        name="E10_LargeSample_HighCensoring_10K",
-        description="大样本10000，高删失70%，NPH场景",
+        name="E10",
+        description="大样本10000, 高删失70%, NPH场景",
         data_config=e10_data, is_nph=True, is_high_censoring=True
     ))
     
@@ -346,6 +334,9 @@ class ExperimentConfig:
     output_dir: str = 'results'
     save_predictions: bool = True
     save_models: bool = False
+    n_repeats: int = 10
+    val_ratio: float = 0.1
+    test_ratio: float = 0.2
     
     groups: List[ExperimentGroup] = field(default_factory=_create_default_groups)
     
@@ -365,7 +356,6 @@ def get_model_config(model_name: str, model_config: ModelConfig = None) -> Dict[
 class GlobalConfig:
     """全局配置汇总"""
     data: DataConfig = field(default_factory=DataConfig)
-    training: TrainingConfig = field(default_factory=TrainingConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     plot: PlotConfig = field(default_factory=PlotConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
@@ -383,12 +373,13 @@ CONFIG = GlobalConfig()
 
 def print_config_summary():
     """打印配置摘要"""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("=" * 60)
     print("FlowSurv / GumbelFlowSurv 实验配置摘要")
     print("=" * 60)
-    print(f"\n设备: {CONFIG.training.device}")
+    print(f"\n设备: {device}")
     print(f"基础随机种子: {CONFIG.experiment.base_seed}")
-    print(f"重复次数: {CONFIG.training.n_repeats}")
+    print(f"重复次数: {CONFIG.experiment.n_repeats}")
     print(f"\n实验组数量: {len(CONFIG.experiment.groups)}")
     
     print("\n" + "-" * 60)

@@ -127,31 +127,39 @@ $$\mathcal{L}_{\text{censored}} = \mathbb{E}_{T^* > T_{\text{obs}}} \left[ \| v_
 
 其中 $T^*$ 从截断指数分布采样。
 
-### 3.3 GumbelFlowSurv 扩展
+### 3.3 GumbelFlowSurv 扩展 (两阶段训练框架)
 
-#### 3.3.1 Gumbel先验
+#### 3.3.1 两阶段训练逻辑
 
-生存时间通常呈右偏分布，使用Gumbel分布作为先验更合适：
+为了解决流模型与先验分布预测之间的训练冲突，GumbelFlowSurv 采用了**两阶段训练框架**：
 
-$$p_Z(z; \alpha, \beta) = \frac{1}{\beta} \exp\left( -\frac{z-\alpha}{\beta} - \exp\left( -\frac{z-\alpha}{\beta} \right) \right)$$
+**第一阶段：Weibull AFT 预训练**
+- **目标**：通过 Encoder 和一个轻量级的 Weibull-MLP (WeibullHead) 学习生存时间的基准分布。
+- **损失函数**：Weibull 负对数似然 (Negative Log-Likelihood)。
+- **状态**：冻结流模型相关模块 (FiLMHead, VectorField)，仅更新 Encoder 和 WeibullHead。
+- **意义**：为流模型提供一个高质量的、基于协变量的初始先验分布。
 
-参数：
-- $\alpha$：位置参数（控制分布中心）
-- $\beta$：尺度参数（控制分布宽度）
+**第二阶段：流匹配微调**
+- **目标**：在固定的先验分布基础上，利用流模型学习更复杂的残差分布和非线性特征。
+- **先验转换**：将第一阶段学到的 Weibull 参数 $(k, \lambda)$ 通过数学变换转换为 Gumbel 最小值的参数 $(\alpha, \beta)$。
+- **损失函数**：仅包含流匹配损失 ($\mathcal{L}_{\text{flow}}$)，排除似然损失以避免模型对抗。
+- **状态**：冻结 WeibullHead，更新 Encoder、FiLMHead 和 VectorField。
 
-#### 3.3.2 参数自适应
+#### 3.3.2 Weibull 到 Gumbel 的参数转换
 
-Gumbel参数由网络根据协变量预测：
+为了确保两阶段分布的一致性，通过中位数对齐和方差匹配进行参数转换：
 
-$$\alpha(X) = \text{MLP}_\alpha(\text{Encoder}(X))$$
-$$\log\beta(X) = \text{MLP}_\beta(\text{Encoder}(X))$$
+1. **中位数对齐**：
+   $$T_{\text{median}} = \lambda (\ln 2)^{1/k}$$
+   $$\alpha = \text{Norm}(T_{\text{median}}) - \beta \cdot \ln(\ln 2)$$
 
-#### 3.3.3 联合损失
+2. **尺度匹配**：
+   $$\beta = \frac{1/k}{\sigma_{\text{time\_scaler}}}$$
 
-$$\mathcal{L} = \mathcal{L}_{\text{flow}} + \lambda_{\text{gumbel}} \cdot \mathcal{L}_{\text{MLE}}$$
+#### 3.3.3 数值稳定性增强
 
-其中：
-$$\mathcal{L}_{\text{MLE}} = -\mathbb{E}_{(X,T,\delta=1)} \left[ \log p_Z(T; \alpha(X), \beta(X)) \right]$$
+- **采样保护**：对 Gumbel 采样过程进行双重截断处理，防止极端概率导致 `inf`。
+- **梯度裁剪**：对向量场输出和 ODE 积分过程进行数值限制，确保长序列求解的稳定性。
 
 ---
 

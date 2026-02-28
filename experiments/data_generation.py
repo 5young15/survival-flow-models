@@ -110,14 +110,14 @@ class WeibullMixtureGenerator:
         return pi1[:, np.newaxis] * S1 + (1 - pi1[:, np.newaxis]) * S2
     
     def hazard(self, t: np.ndarray, X: np.ndarray) -> np.ndarray:
-        """风险函数 h(t|x) = f(t|x) / S(t|x)（带数值稳定性保护）"""
+        """风险函数 h(t|x) = f(t|x) / S(t|x) (带数值稳定性保护)"""
         f = self.pdf(t, X)
         S = self.survival(t, X)
         h = f / np.maximum(S, 1e-6)
         return np.clip(h, 0.0, 1000.0)
     
     def median(self, X: np.ndarray) -> np.ndarray:
-        """中位生存时间（数值求解）"""
+        """中位生存时间 (数值求解)"""
         lambda1, lambda2, pi1 = self._compute_params(X)
         k1, k2 = self.config.weibull_k1, self.config.weibull_k2
         
@@ -138,7 +138,7 @@ class WeibullMixtureGenerator:
 
 
 class WeibullSingleGenerator:
-    """Weibull单峰分布生成器（PH场景）"""
+    """Weibull单峰分布生成器 (PH场景)"""
     
     def __init__(self, config):
         self.config = config
@@ -171,7 +171,7 @@ class WeibullSingleGenerator:
         return np.exp(-(t / lam[:, np.newaxis])**self.k)
     
     def hazard(self, t: np.ndarray, X: np.ndarray) -> np.ndarray:
-        """风险函数（带数值稳定性保护）"""
+        """风险函数 (带数值稳定性保护)"""
         lam = self._compute_lambda(X)
         k = self.k
         h = (k / lam[:, np.newaxis]) * (t / lam[:, np.newaxis])**(k - 1)
@@ -184,7 +184,7 @@ class WeibullSingleGenerator:
 
 
 class GaussianMixtureGenerator:
-    """高斯混合分布生成器（对数时间域）"""
+    """高斯混合分布生成器 (对数时间域)"""
     
     def __init__(self, config):
         self.config = config
@@ -243,7 +243,7 @@ class GaussianMixtureGenerator:
         return pi1[:, np.newaxis] * S1 + (1 - pi1[:, np.newaxis]) * S2
     
     def hazard(self, t: np.ndarray, X: np.ndarray) -> np.ndarray:
-        """风险函数（带数值稳定性保护）"""
+        """风险函数 (带数值稳定性保护)"""
         f = self.pdf(t, X)
         S = self.survival(t, X)
         h = f / np.maximum(S, 1e-6)

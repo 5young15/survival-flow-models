@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from matplotlib.colors import Normalize
 from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass
 
 plt.rcParams['font.size'] = 12
 plt.rcParams['axes.titlesize'] = 14
@@ -12,42 +11,7 @@ plt.rcParams['axes.labelsize'] = 12
 plt.rcParams['legend.fontsize'] = 10
 plt.rcParams['figure.dpi'] = 150
 
-
-@dataclass
-class PlotConfig:
-    """绘图配置"""
-    figsize_single: Tuple[int, int] = (8, 6)
-    figsize_multi: Tuple[int, int] = (14, 10)
-    dpi: int = 150
-    n_samples: int = 5
-    colors: Dict[str, str] = None
-    linestyles: Dict[str, str] = None
-    save_dir: str = 'results/figures'
-    save_format: str = 'png'
-    
-    def __post_init__(self):
-        if self.colors is None:
-            self.colors = {
-                'true': '#2E86AB',
-                'LinearCoxPH': '#A23B72',
-                'DeepSurv': '#F18F01',
-                'WeibullAFT': '#C73E1D',
-                'RSF': '#3B1F2B',
-                'DeepHit': '#95C623',
-                'FlowSurv': '#1B998B',
-                'GumbelFlowSurv': '#E84855',
-            }
-        if self.linestyles is None:
-            self.linestyles = {
-                'true': '-',
-                'LinearCoxPH': '--',
-                'DeepSurv': '-.',
-                'WeibullAFT': ':',
-                'RSF': '--',
-                'DeepHit': '-.',
-                'FlowSurv': '-',
-                'GumbelFlowSurv': '-',
-            }
+from experiments.config import PlotConfig
 
 
 class SurvivalVisualizer:
@@ -279,7 +243,7 @@ class SurvivalVisualizer:
         save_name: str = None
     ):
         """
-        绘制风险曲面对比图（真实 vs 各模型）
+        绘制风险曲面对比图 (真实 vs 各模型)
         """
         n_models = len(pred_hazard_surfaces) + 1
         fig, axes = plt.subplots(1, n_models, figsize=(4 * n_models, 4))

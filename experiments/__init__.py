@@ -1,6 +1,5 @@
-from experiments.config import (
+from .config import (
     DataConfig,
-    TrainingConfig,
     ModelConfig,
     PlotConfig,
     ExperimentConfig,
@@ -11,7 +10,7 @@ from experiments.config import (
     print_config_summary,
 )
 
-from experiments.data_generation import (
+from .data_generation import (
     SurvivalData,
     SurvivalDataGenerator,
     WeibullMixtureGenerator,
@@ -20,7 +19,7 @@ from experiments.data_generation import (
     generate_experiment_data,
 )
 
-from experiments.metrics import (
+from .metrics import (
     MetricsResult,
     concordance_index_fast,
     brier_score_at_time,
@@ -37,15 +36,13 @@ from experiments.metrics import (
     metrics_to_dict,
 )
 
-from experiments.visualization import (
-    PlotConfig as VisPlotConfig,
+from .visualization import (
     SurvivalVisualizer,
     generate_visualization_report,
 )
 
 __all__ = [
-    'DataConfig',
-    'TrainingConfig', 
+    'DataConfig', 
     'ModelConfig',
     'PlotConfig',
     'ExperimentConfig',
@@ -74,7 +71,6 @@ __all__ = [
     'wasserstein_1_distance',
     'compute_all_metrics',
     'metrics_to_dict',
-    'VisPlotConfig',
     'SurvivalVisualizer',
     'generate_visualization_report',
 ]

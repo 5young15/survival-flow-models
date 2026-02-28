@@ -1,112 +1,128 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math  # 用于init中的标量log
+from typing import Union, Optional, Dict, Tuple
+
 from models.flowmodel.base_flow import FlowSurv
 from models.flowmodel.components import FiLMResidualBlock, odeint_euler, odeint_rk4
-from typing import Union, Optional
 
 
 class GumbelFlowSurv(FlowSurv):
+    # 数学常量
+    _LN_2 = 0.6931471805599453      # ln(2)
+    _LN_LN_2 = -0.3665129205816643  # ln(ln(2))
+
     def __init__(self, in_dim: int, config: Optional[dict] = None, **kwargs):
         super().__init__(in_dim, config, **kwargs)
-        self.weight_gumbel = self.config.get('weight_gumbel', 0.1)
-        self.truncated_samples = self.config.get('truncated_samples', 32)
+        self.stage = self.config.get('stage', 'flow')
 
         z_dim = self.encoder_dims[-1]
-        # film_head (复用)
-        film_layers = []
+        weibull_layers = []
         prev = z_dim
-        for d in self.config.get('film_hidden', [8]):
-            film_layers.extend([nn.Linear(prev, d), nn.SiLU()])
+        for d in self.config.get('weibull_head_hidden', [16, 8]):
+            weibull_layers.extend([nn.Linear(prev, d), nn.SiLU()])
             prev = d
-        film_layers.append(nn.Linear(prev, self.vf_in_dim * 2))
-        self.film_head = nn.Sequential(*film_layers)
+        weibull_layers.append(nn.Linear(prev, 2))
+        self.weibull_head = nn.Sequential(*weibull_layers)
 
-        # alpha / log_beta head
-        alpha_layers = []
-        prev = z_dim
-        for d in self.config.get('gumbel_alpha_head_hidden', [16, 8]):
-            alpha_layers.extend([nn.Linear(prev, d), nn.SiLU()])
-            prev = d
-        alpha_layers.append(nn.Linear(prev, 1))
-        self.alpha_head = nn.Sequential(*alpha_layers)
+        self.set_stage(self.stage)
 
-        beta_layers = []
-        prev = z_dim
-        for d in self.config.get('gumbel_beta_head_hidden', [16, 8]):
-            beta_layers.extend([nn.Linear(prev, d), nn.SiLU()])
-            prev = d
-        beta_layers.append(nn.Linear(prev, 1))
-        self.log_beta_head = nn.Sequential(*beta_layers)
-
-        # vector_field (复用父类结构)
-        vf_layers = []
-        prev_dim = self.vf_in_dim
-        for d in self.vf_hidden_dims:
-            vf_layers.append(FiLMResidualBlock(prev_dim, d, self.tau_dim, self.vf_in_dim * 2, self.dropout))
-            prev_dim = d
-        vf_layers.append(nn.Linear(prev_dim, self.vf_in_dim))
-        self.vector_field = nn.ModuleList(vf_layers)
-
-        self._gumbel_initialized = False
-
-    def init_gumbel_params(self, times: torch.Tensor, events: Optional[torch.Tensor] = None, robust_scale: bool = True):
-        """根据训练数据初始化 Gumbel 参数（纯tensor）"""
-        if events is not None:
-            event_mask = (events == 1)
-            if torch.any(event_mask):
-                times = times[event_mask]
-        times_norm = self._to_normalized_time(times)
-        median_norm = torch.median(times_norm).item()
-
-        if robust_scale:
-            q25 = torch.quantile(times_norm, 0.25).item()
-            q75 = torch.quantile(times_norm, 0.75).item()
-            iqr = q75 - q25
-            scale_est = iqr / 1.34898
+    def set_stage(self, stage: str):
+        if stage not in {'weibull', 'flow'}:
+            raise ValueError(f"Unknown stage: {stage}")
+        self.stage = stage
+        if stage == 'weibull':
+            self._set_requires_grad(self.encoder, True)
+            self._set_requires_grad(self.weibull_head, True)
+            self._set_requires_grad(self.film_head, False)
+            self._set_requires_grad(self.vector_field, False)
         else:
-            scale_est = torch.std(times_norm).item()
+            self._set_requires_grad(self.encoder, True)
+            self._set_requires_grad(self.weibull_head, False)
+            self._set_requires_grad(self.film_head, True)
+            self._set_requires_grad(self.vector_field, True)
 
-        scale_est = max(scale_est, 0.1)
-        beta_init = scale_est / 1.28255
-        alpha_init = median_norm + beta_init * math.log(math.log(2.0))
-        log_beta_init = math.log(beta_init)
+    def _set_requires_grad(self, module: nn.Module, flag: bool):
+        for p in module.parameters():
+            p.requires_grad = flag
 
-        with torch.no_grad():
-            self.alpha_head[-1].bias.fill_(alpha_init)
-            self.log_beta_head[-1].bias.fill_(log_beta_init)
-        self._gumbel_initialized = True
+    def _weibull_params(self, z: torch.Tensor):
+        params = self.weibull_head(z)
+        log_k = torch.clamp(params[:, 0:1], -5.0, 5.0)
+        log_lam = torch.clamp(params[:, 1:2], -5.0, 5.0)
+        k = torch.exp(log_k)
+        lam = torch.exp(log_lam)
+        return k, lam
 
-    def get_gumbel_params(self, x: torch.Tensor):
-        z = self.encoder(x)
-        alpha = self.alpha_head(z)
-        log_beta = self.log_beta_head(z)
-        beta = torch.exp(torch.clamp(log_beta, min=-10.0, max=6.0))
+    def _weibull_to_gumbel(self, k: torch.Tensor, lam: torch.Tensor):
+        log_2 = lam.new_tensor(self._LN_2)
+        t_median = lam * torch.pow(log_2, 1.0 / k)
+        median_norm = self._to_normalized_time(t_median)
+        beta = (1.0 / k) / (self.time_scaler_std + 1e-8)
+        ln_ln2 = lam.new_tensor(self._LN_LN_2)
+        alpha = median_norm - beta * ln_ln2
+        alpha = torch.clamp(alpha, min=-10.0, max=10.0)
+        log_beta = torch.log(torch.clamp(beta, min=1e-6))
+        log_beta = torch.clamp(log_beta, min=-8.0, max=4.0)
+        beta = torch.exp(log_beta)
+        return alpha, beta
+
+    def get_gumbel_params(self, x: torch.Tensor, z: Optional[torch.Tensor] = None):
+        if z is None:
+            z = self.encoder(x)
+        z_weibull = z.detach() if self.stage == 'flow' else z
+        k, lam = self._weibull_params(z_weibull)
+        alpha, beta = self._weibull_to_gumbel(k, lam)
         return alpha, beta
 
     def sample_prior(self, shape, device, alpha=None, beta=None):
-        u = torch.rand(shape, device=device).clamp_(1e-6, 1 - 1e-6)
-        log_u = torch.log(u)
-        z = -torch.log(-log_u)
-        z = torch.clamp(z, -10.0, 10.0)
+        """从 Gumbel 最小值分布采样 (Weibull 对应)"""
+        # 更加数值稳定的 Gumbel 采样: z = α - β * log(-log U) 
+        # 注意: 此处为 Gumbel 最小值分布, 对应 Weibull AFT 线性部分
+        u = torch.rand(shape, device=device).clamp_(1e-10, 1.0 - 1e-10)
+        # 使用 -log(-log(u)) 采样标准 Gumbel, 
+        # 然后根据 Weibull AFT 对应的 Gumbel 最小值分布转换
+        log_neg_log_u = torch.log(-torch.log(u))
+        z = log_neg_log_u  # 标准 Gumbel 最小值分布的核心部分
+        
+        # 限制范围以防止溢出
+        z = torch.clamp(z, min=-15.0, max=15.0)
+        
         if alpha is not None and beta is not None:
             z = alpha + beta * z
-        return torch.clamp(z, -20.0, 20.0)
+        return torch.clamp(z, min=-20.0, max=20.0)
 
     def log_prob_prior(self, z, alpha, beta):
-        beta = torch.clamp(beta, 1e-6, 1e6)
+        """计算 Gumbel 最小值分布的对数似然, 带有数值保护"""
+        # 确保 beta 为正且在一个合理范围内
+        beta = torch.clamp(beta, min=1e-5, max=100.0)
         log_beta = torch.log(beta)
-        std = torch.clamp((z - alpha) / beta, -20.0, 20.0)
-        exp_neg_std = torch.exp(-std)
-        log_prob = -log_beta - std - exp_neg_std
+        # 限制标准化残差, 防止 exp(std) 溢出
+        std = torch.clamp((z - alpha) / beta, min=-20.0, max=10.0)
+        # Gumbel Min PDF: f(z) = 1/β * exp(std - exp(std))
+        exp_std = torch.exp(std)
+        log_prob = -log_beta + std - exp_std
+        # 对最终对数似然进行截断保护
         return torch.clamp(log_prob, min=-100.0, max=88.0)
 
     def forward_loss(self, features: torch.Tensor, times_raw: torch.Tensor, events: torch.Tensor, **kwargs):
         device = features.device
         t1 = self._to_normalized_time(times_raw).float().unsqueeze(-1)
-        mod_params = self.get_film(features)
-        alpha, beta = self.get_gumbel_params(features)
+        if self.stage == 'weibull':
+            z = self.encoder(features)
+            k, lam = self._weibull_params(z)
+            t = torch.clamp(times_raw, min=1e-6)
+            t_lam = t / lam
+            term_pow = torch.pow(t_lam, k)
+            log_pdf = torch.log(k) - torch.log(lam) + (k - 1) * torch.log(t_lam) - term_pow
+            log_surv = -term_pow
+            log_lik = events * log_pdf + (1 - events) * log_surv
+            neg_ll = -log_lik.mean()
+            return neg_ll, {"neg_loglik": neg_ll.item()}
+
+        z = self.encoder(features)
+        mod_params = self.film_head(z)
+        alpha, beta = self.get_gumbel_params(features, z=z)
 
         event_mask = (events == 1)
         censored_mask = (events == 0)
@@ -115,7 +131,7 @@ class GumbelFlowSurv(FlowSurv):
             return torch.tensor(0.0, device=device, requires_grad=True), {}
 
         total_loss = torch.zeros(1, device=device, requires_grad=True)
-        loss_dict = {}
+        loss_dict = {'event_loss': 0.0, 'censored_loss': 0.0}
 
         if event_mask.any():
             t1_event = t1[event_mask]
@@ -129,11 +145,8 @@ class GumbelFlowSurv(FlowSurv):
             target_v = t1_event - t0
             pred_v = self.vf_forward(tau, xt, mod_event)
             event_loss = F.mse_loss(pred_v, target_v)
-            logp = self.log_prob_prior(t1_event, alpha_event, beta_event)
-            mle_loss = -logp.mean()
-            total_loss = total_loss + self.weight_event * event_loss + self.weight_gumbel * mle_loss
+            total_loss = total_loss + self.weight_event * event_loss
             loss_dict['event_loss'] = event_loss.item()
-            loss_dict['mle_loss'] = mle_loss.item()
 
         if censored_mask.any():
             t_obs = t1[censored_mask]
@@ -155,22 +168,21 @@ class GumbelFlowSurv(FlowSurv):
             total_loss = total_loss + self.weight_censored * censored_loss
             loss_dict['censored_loss'] = censored_loss.item()
 
-        loss_dict.setdefault('event_loss', 0.0)
-        loss_dict.setdefault('censored_loss', 0.0)
-        loss_dict.setdefault('mle_loss', 0.0)
         return total_loss, loss_dict
 
     def predict_time(self, features: torch.Tensor, mode: str = 'median', **kwargs) -> torch.Tensor:
         self.eval()
         with torch.no_grad():
-            mod_params = self.get_film(features)
-            alpha, beta = self.get_gumbel_params(features)
+            z = self.encoder(features)
+            mod_params = self.film_head(z)
+            alpha, beta = self.get_gumbel_params(features, z=z)
             B = features.size(0)
             device = features.device
             n_samples = self.n_samples if mode != 'ode_step' else 1
             if mode == 'ode_step':
-                log_log_2 = torch.log(torch.log(torch.tensor(2.0, device=device)))
-                t0 = alpha - beta * log_log_2
+                # Gumbel 最小值分布的中位数: α + β * ln(ln 2)
+                log_log_2 = alpha.new_tensor(self._LN_LN_2)
+                t0 = alpha + beta * log_log_2
                 t0 = torch.clamp(t0, -10.0, 10.0)
                 mod_ext = mod_params
             else:
@@ -198,8 +210,9 @@ class GumbelFlowSurv(FlowSurv):
                         ode_steps: int = 100, batch_size_limit: int = 50000) -> torch.Tensor:
         self.eval()
         device = features.device
-        mod_params = self.get_film(features)
-        alpha, beta = self.get_gumbel_params(features)
+        z = self.encoder(features)
+        mod_params = self.film_head(z)
+        alpha, beta = self.get_gumbel_params(features, z=z)
         time_grid = time_grid.to(device)
         num_times = time_grid.shape[0]
         if self.is_log_space:
@@ -255,4 +268,4 @@ class GumbelFlowSurv(FlowSurv):
         s_full = torch.clamp(1.0 - cdf, min=0.0, max=1.0)
         return s_full[:, 1:] if add_zero else s_full
 
-    # 其余方法（hazard, cum_hazard, metrics, risk）复用父类，无需重写
+    # 其余方法(hazard, cum_hazard, metrics, risk)复用父类,无需重写
