@@ -103,6 +103,10 @@ $$C \sim \text{Exponential}(\lambda_c)$$
 | **E4** | 高斯混合 | NPH | 2000 | 40% | 5维 | 低 | 多峰密度 |
 | **E5** | Weibull 混合 | NPH | **500** | 50% | 5维 | 低 | 小样本场景 |
 | **E6** | Weibull 混合 | NPH | 2000 | 50% | **10维** | **高** | 高维噪声 |
+| **E7** | Weibull 混合 | NPH | **5000** | 40% | 5维 | 低 | 大样本场景 |
+| **E8** | Weibull 混合 | NPH | **10000** | 40% | 5维 | 低 | 超大样本场景 |
+| **E9** | Weibull 混合 | NPH | **5000** | **70%** | 5维 | 低 | 大样本+高删失 |
+| **E10** | Weibull 混合 | NPH | **10000** | **70%** | 5维 | 低 | 超大样本+高删失 |
 
 ---
 
@@ -169,6 +173,7 @@ $$C \sim \text{Exponential}(\lambda_c)$$
 | E4 (多峰) | FlowSurv > GumbelFlowSurv > DeepHit > Weibull |
 | E5 (小样本) | RSF ≈ Cox > FlowSurv (流模型需更多数据) |
 | E6 (高噪声) | 正则化好的模型表现更稳定 |
+| E7-E10 (大样本) | 流模型优势进一步扩大，收敛更稳定 |
 
 ### 7.2 密度/Hazard指标
 

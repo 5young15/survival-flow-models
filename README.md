@@ -92,7 +92,10 @@ python run_experiments.py
 | E4 | 2000 | 40% | Gaussian混合 | 多峰分布 |
 | E5 | 500 | 50% | Weibull混合 | 小样本 |
 | E6 | 2000 | 50% | Weibull混合 | 高噪声 |
-| E7-E10 | 5K-10K | 40-70% | Weibull混合 | 大样本 |
+| E7 | 5000 | 40% | Weibull混合 | 大样本 |
+| E8 | 10000 | 40% | Weibull混合 | 超大样本 |
+| E9 | 5000 | 70% | Weibull混合 | 大样本+高删失 |
+| E10 | 10000 | 70% | Weibull混合 | 超大样本+高删失 |
 
 ## 评估指标
 
