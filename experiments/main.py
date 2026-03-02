@@ -16,9 +16,10 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from config import CONFIG, print_config_summary
-from run_experiments import (
+from experiments.config import CONFIG, print_config_summary
+from experiments.run_experiments import (
     run_all_experiments,
+    run_cv_experiments,
     aggregate_results,
     print_results_table,
     save_results_to_csv
@@ -29,6 +30,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='FlowSurv Simulation Experiments')
     parser.add_argument('--quick', action='store_true', help='Quick test mode (1 repeat, 5 epochs)')
     parser.add_argument('--full', action='store_true', help='Full experiment mode (10 repeats)')
+    parser.add_argument('--cv', type=int, nargs='?', const=5, default=None, help='K-fold cross validation (default: 5-fold if --cv specified without value)')
     parser.add_argument('--repeats', type=int, default=None, help='Number of repeats (overrides quick/full)')
     parser.add_argument('--models', nargs='+', default=None, help='Models to run (default: all)')
     parser.add_argument('--groups', nargs='+', default=None, help='Experiment groups to run (default: all)')
@@ -68,38 +70,56 @@ def main():
     
     print_config_summary()
 
-    # Determine n_repeats
-    if args.repeats is not None:
-        n_repeats = args.repeats
-    elif args.quick:
-        n_repeats = 1
-    elif args.full:
-        n_repeats = 10
-    else:
-        n_repeats = CONFIG.experiment.n_repeats
-
     model_names = args.models
     if model_names is None:
         model_names = ['LinearCoxPH', 'DeepSurv', 'WeibullAFT', 'RSF',
                       'DeepHit', 'FlowSurv', 'GumbelFlowSurv']
 
-    print(f"\n运行配置:")
-    print(f"  - 重复次数: {n_repeats}")
-    print(f"  - 模型列表: {model_names}")
-    print(f"  - 输出目录: {args.output}")
-    print(f"  - 检查点目录: {args.checkpoint or 'checkpoints'}")
-    print()
+    if args.cv is not None:
+        print(f"\n运行配置 (交叉验证模式):")
+        print(f"  - 折数: {args.cv}")
+        print(f"  - 模型列表: {model_names}")
+        print(f"  - 输出目录: {args.output}")
+        print(f"  - 检查点目录: {args.checkpoint or 'checkpoints'}")
+        print()
 
-    results = run_all_experiments(
-        config=CONFIG,
-        model_names=model_names,
-        group_names=args.groups,
-        n_repeats=n_repeats,
-        save_results=True,
-        output_dir=args.output,
-        checkpoint_dir=args.checkpoint,
-        device=device
-    )
+        results = run_cv_experiments(
+            config=CONFIG,
+            model_names=model_names,
+            group_names=args.groups,
+            n_folds=args.cv,
+            save_results=True,
+            output_dir=args.output,
+            checkpoint_dir=args.checkpoint,
+            device=device
+        )
+    else:
+        if args.repeats is not None:
+            n_repeats = args.repeats
+        elif args.quick:
+            n_repeats = 1
+        elif args.full:
+            n_repeats = 10
+        else:
+            n_repeats = CONFIG.experiment.n_repeats
+
+        print(f"\n运行配置:")
+        print(f"  - 重复次数: {n_repeats}")
+        print(f"  - 模型列表: {model_names}")
+        print(f"  - 输出目录: {args.output}")
+        print(f"  - 检查点目录: {args.checkpoint or 'checkpoints'}")
+        print()
+
+        results = run_all_experiments(
+            config=CONFIG,
+            model_names=model_names,
+            group_names=args.groups,
+            n_repeats=n_repeats,
+            save_results=True,
+            output_dir=args.output,
+            checkpoint_dir=args.checkpoint,
+            device=device
+        )
 
     aggregated = aggregate_results(results)
 

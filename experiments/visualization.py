@@ -11,7 +11,7 @@ plt.rcParams['axes.labelsize'] = 12
 plt.rcParams['legend.fontsize'] = 10
 plt.rcParams['figure.dpi'] = 150
 
-from config import PlotConfig
+from .config import PlotConfig
 
 
 class SurvivalVisualizer:
