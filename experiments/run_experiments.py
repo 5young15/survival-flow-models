@@ -26,14 +26,14 @@ from tqdm import tqdm
 # 添加项目根目录到 Python 路径，以便导入其他模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import (
+from .config import (
     GlobalConfig, CONFIG, get_model_config,
     ExperimentGroup, DataConfig
 )
-from data_generation import (
+from .data_generation import (
     SurvivalDataGenerator, SurvivalData, generate_experiment_data
 )
-from metrics import (
+from .metrics import (
     compute_all_metrics, metrics_to_dict, MetricsResult,
     concordance_index_fast, integrated_brier_score
 )
@@ -95,13 +95,15 @@ class ModelTrainer:
         """
         raise NotImplementedError
 
-    def predict(self, test_data: SurvivalData, time_grid: Union[np.ndarray, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def predict(self, test_data: SurvivalData, time_grid: Union[np.ndarray, torch.Tensor],
+                use_mc: bool = False) -> Dict[str, torch.Tensor]:
         """
         模型预测 (纯虚函数)
         
         参数:
             test_data: 测试数据集
             time_grid: 时间点网格用于预测生存函数
+            use_mc: 是否使用蒙特卡洛采样法 (仅流模型有效)
         
         返回:
             包含预测结果的字典，包括：
@@ -151,8 +153,8 @@ class PyTorchModelTrainer(ModelTrainer):
         from models.baselines.weibullAFT import WeibullAFT
         from models.flowmodel.base_flow import FlowSurv
         from models.flowmodel.gumbel_flow import GumbelFlowSurv
+        from models.flowmodel.multi_gumbel_flow import MultiGumbelFlowSurv
 
-        # 模型名称到模型类的映射字典
         model_classes = {
             'LinearCoxPH': LinearCoxPH,
             'DeepSurv': DeepSurv,
@@ -160,8 +162,10 @@ class PyTorchModelTrainer(ModelTrainer):
             'DeepHit': DeepHit,
             'FlowSurv': FlowSurv,
             'GumbelFlowSurv': GumbelFlowSurv,
-            'GumbelFlow': GumbelFlowSurv,  # 别名
-            'GFM': GumbelFlowSurv,  # 别名
+            'GumbelFlow': GumbelFlowSurv,
+            'GFM': GumbelFlowSurv,
+            'MultiGumbelFlowSurv': MultiGumbelFlowSurv,
+            'MGFM': MultiGumbelFlowSurv,
         }
 
         if self.model_name not in model_classes:
@@ -382,15 +386,15 @@ class PyTorchModelTrainer(ModelTrainer):
             return best_val_loss
 
         if self.model_name in {'GumbelFlowSurv', 'GumbelFlow', 'GFM'} and hasattr(self.model, 'set_stage'):
-            weibull_epochs = model_config.get('WEIBULL_EPOCHS', 200)
-            if weibull_epochs > 0:
+            gumbel_epochs = model_config.get('GUMBEL_EPOCHS', 200)
+            if gumbel_epochs > 0:
                 train_stage(
-                    stage='weibull',
-                    epochs=weibull_epochs,
-                    lr=model_config.get('WEIBULL_LR', 5e-8),
-                    batch_size=model_config.get('WEIBULL_BATCH_SIZE', 64),
-                    patience=model_config.get('WEIBULL_PATIENCE', 15),
-                    weight_decay=model_config.get('WEIBULL_WEIGHT_DECAY', 1e-5),
+                    stage='gumbel',
+                    epochs=gumbel_epochs,
+                    lr=model_config.get('GUMBEL_LR', 5e-8),
+                    batch_size=model_config.get('GUMBEL_BATCH_SIZE', 64),
+                    patience=model_config.get('GUMBEL_PATIENCE', 15),
+                    weight_decay=model_config.get('GUMBEL_WEIGHT_DECAY', 1e-5),
                 )
 
             best_val_loss = train_stage(
@@ -399,6 +403,26 @@ class PyTorchModelTrainer(ModelTrainer):
                 lr=model_config.get('LR', 3e-4),
                 batch_size=model_config.get('BATCH_SIZE', 64),
                 patience=model_config.get('PATIENCE', 15),
+                weight_decay=model_config.get('WEIGHT_DECAY', 1e-5),
+            )
+        elif self.model_name in {'MultiGumbelFlowSurv', 'MGFM'} and hasattr(self.model, 'set_stage'):
+            gumbel_epochs = model_config.get('GUMBEL_EPOCHS', 200)
+            if gumbel_epochs > 0:
+                train_stage(
+                    stage='gumbel',
+                    epochs=gumbel_epochs,
+                    lr=model_config.get('GUMBEL_LR', 5e-5),
+                    batch_size=model_config.get('GUMBEL_BATCH_SIZE', 64),
+                    patience=model_config.get('GUMBEL_PATIENCE', 15),
+                    weight_decay=model_config.get('GUMBEL_WEIGHT_DECAY', 1e-5),
+                )
+
+            best_val_loss = train_stage(
+                stage='flow',
+                epochs=model_config.get('EPOCHS', 200),
+                lr=model_config.get('LR', 1e-4),
+                batch_size=model_config.get('BATCH_SIZE', 64),
+                patience=model_config.get('PATIENCE', 10),
                 weight_decay=model_config.get('WEIGHT_DECAY', 1e-5),
             )
         else:
@@ -423,7 +447,8 @@ class PyTorchModelTrainer(ModelTrainer):
 
         return best_val_loss, False
 
-    def predict(self, test_data: SurvivalData, time_grid: Union[np.ndarray, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def predict(self, test_data: SurvivalData, time_grid: Union[np.ndarray, torch.Tensor],
+                use_mc: bool = False) -> Dict[str, torch.Tensor]:
         """
         模型预测
         
@@ -435,6 +460,7 @@ class PyTorchModelTrainer(ModelTrainer):
         参数:
             test_data: 测试数据集
             time_grid: 时间点网格用于预测生存函数
+            use_mc: 是否使用蒙特卡洛采样法 (仅流模型有效)
         
         返回:
             包含预测结果的字典:
@@ -448,7 +474,6 @@ class PyTorchModelTrainer(ModelTrainer):
             raise RuntimeError("Model not trained.")
 
         self.model.eval()
-        # 统一为 Tensor
         features = test_data.features
         if not isinstance(features, torch.Tensor):
             features = torch.tensor(features, dtype=torch.float32).to(self.device)
@@ -461,28 +486,30 @@ class PyTorchModelTrainer(ModelTrainer):
             time_grid = time_grid.to(self.device)
 
         with torch.no_grad():
-            # 对于有 predict_survival_metrics 方法的模型 (如 FlowSurv)
-            if hasattr(self.model, 'predict_survival_metrics'):
+            if use_mc and hasattr(self.model, 'predict_survival_metrics_mc'):
+                results = self.model.predict_survival_metrics_mc(features, time_grid)
+                risk_scores = self.model.predict_risk_mc(features)
+                survival = results['survival']
+                log_hazard = results.get('log_hazard')
+                log_density = None
+                pred_medians = self.model.predict_time_mc(features, mode='median')
+            elif hasattr(self.model, 'predict_survival_metrics'):
                 results = self.model.predict_survival_metrics(features, time_grid)
                 risk_scores = self.model.predict_risk(features)
                 survival = results['survival']
-                # 对数空间的 hazard 和 density
                 log_hazard = results.get('log_hazard')
                 log_density = results.get('log_density')
                 pred_medians = self.model.predict_time(features, mode='median')
             else:
-                # 对于其他模型 (如 DeepSurv, CoxPH)
                 risk_scores = self.model.predict_risk(features)
                 survival = self.model.predict_survival_function(features, time_grid)
                 pred_medians = self.model.predict_time(features, mode='median')
 
-                # 尝试计算风险函数 (原始空间)
                 try:
                     log_hazard = self.model.compute_hazard_rate(features, time_grid)
                 except Exception:
                     log_hazard = None
 
-                # 尝试计算密度函数
                 try:
                     if hasattr(self.model, 'compute_density'):
                         density_raw = self.model.compute_density(features, time_grid)
@@ -614,19 +641,20 @@ class RSFTrainer(ModelTrainer):
 
         return 0.0, False
 
-    def predict(self, test_data: SurvivalData, time_grid: Union[np.ndarray, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def predict(self, test_data: SurvivalData, time_grid: Union[np.ndarray, torch.Tensor],
+                _use_mc: bool = False) -> Dict[str, torch.Tensor]:
         """
         RSF 模型预测
         
         参数:
             test_data: 测试数据集
             time_grid: 时间点网格
+            _use_mc: 未使用 (RSF不支持蒙特卡洛采样)
         
         返回:
             包含预测结果的字典
         """
         features = test_data.features
-        # 确保 time_grid 是 tensor
         if isinstance(time_grid, np.ndarray):
             time_grid = torch.from_numpy(time_grid).float().to(features.device if isinstance(features, torch.Tensor) else 'cpu')
 
@@ -644,7 +672,7 @@ class RSFTrainer(ModelTrainer):
             'survival': survival,
             'medians': pred_medians,
             'log_hazard': log_hazard,
-            'log_density': None  # RSF 不提供密度函数
+            'log_density': None
         }
 
 
@@ -671,7 +699,8 @@ def run_single_experiment(
     repeat_id: int,
     config: GlobalConfig,
     checkpoint_dir: Optional[str] = None,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
+    use_mc: bool = False
 ) -> Tuple[MetricsResult, Dict[str, np.ndarray], Dict[str, Any]]:
     """
     运行单次实验 (完整流程)
@@ -691,6 +720,7 @@ def run_single_experiment(
         config: 全局配置对象
         checkpoint_dir: 检查点目录
         device: 计算设备
+        use_mc: 是否使用蒙特卡洛采样法 (仅流模型有效)
     
     返回:
         Tuple 包含:
@@ -770,7 +800,7 @@ def run_single_experiment(
 
     # 预测
     time_grid = full_data.time_grid
-    predictions = trainer.predict(test_data, time_grid)
+    predictions = trainer.predict(test_data, time_grid, use_mc=use_mc)
 
     # 计算评估指标 (确保传入的是对数空间)
     eps = 1e-100
@@ -827,7 +857,8 @@ def run_all_experiments(
     save_results: bool = True,
     output_dir: Optional[str] = None,
     checkpoint_dir: Optional[str] = None,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
+    use_mc: bool = False
 ) -> Dict[str, Any]:
     """
     运行所有实验 (批量执行)
@@ -847,6 +878,7 @@ def run_all_experiments(
         output_dir: 输出目录
         checkpoint_dir: 检查点目录
         device: 计算设备
+        use_mc: 是否使用蒙特卡洛采样法 (仅流模型有效)
     
     返回:
         包含所有实验结果的字典
@@ -890,7 +922,7 @@ def run_all_experiments(
             for repeat_id in range(n_repeats):
                 try:
                     metrics, predictions, info = run_single_experiment(
-                        group, model_name, repeat_id, config, checkpoint_dir, device
+                        group, model_name, repeat_id, config, checkpoint_dir, device, use_mc
                     )
 
                     model_results.append({
@@ -927,6 +959,244 @@ def run_all_experiments(
         # 保存为 CSV 格式
         save_results_to_csv(all_results, output_dir)
 
+    return all_results
+
+
+def run_cv_single_experiment(
+    group,
+    model_name: str,
+    fold_id: int,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    test_idx: np.ndarray,
+    full_data: 'SurvivalData',
+    config: 'GlobalConfig',
+    checkpoint_dir: Optional[str] = None,
+    device: Optional[torch.device] = None,
+    use_mc: bool = False
+) -> Tuple[MetricsResult, Dict[str, np.ndarray], Dict[str, Any]]:
+    """
+    运行单折交叉验证实验
+    
+    参数:
+        group: 实验组配置
+        model_name: 模型名称
+        fold_id: 折ID
+        train_idx: 训练集索引
+        val_idx: 验证集索引
+        test_idx: 测试集索引
+        full_data: 完整数据
+        config: 全局配置
+        checkpoint_dir: 检查点目录
+        device: 计算设备
+        use_mc: 是否使用蒙特卡洛采样
+    
+    返回:
+        Tuple 包含指标、预测结果、实验信息
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    seed = group.data_config.random_seed + fold_id
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    
+    def split_data(data: 'SurvivalData', idx: np.ndarray) -> 'SurvivalData':
+        idx_tensor = torch.from_numpy(idx).long() if isinstance(idx, np.ndarray) else torch.tensor(idx, dtype=torch.long)
+        return SurvivalData(
+            features=data.features[idx_tensor],
+            times=data.times[idx_tensor],
+            events=data.events[idx_tensor],
+            true_times=data.true_times[idx_tensor] if data.true_times is not None else None,
+            true_hazard=data.true_hazard[idx_tensor] if data.true_hazard is not None else None,
+            true_density=data.true_density[idx_tensor] if data.true_density is not None else None,
+            true_survival=data.true_survival[idx_tensor] if data.true_survival is not None else None,
+            time_grid=data.time_grid,
+            feature_names=data.feature_names
+        )
+    
+    train_data = split_data(full_data, train_idx)
+    val_data = split_data(full_data, val_idx)
+    test_data = split_data(full_data, test_idx)
+    
+    generator = SurvivalDataGenerator(group.data_config)
+    test_features_np = test_data.features.cpu().numpy() if isinstance(test_data.features, torch.Tensor) else test_data.features
+    true_medians_np = generator.generator.median(test_features_np)
+    true_medians = torch.from_numpy(true_medians_np).float().to(device)
+    
+    trainer = create_trainer(model_name, config)
+    trainer.create_model(in_dim=train_data.features.shape[1])
+    
+    fold_checkpoint_dir = os.path.join(checkpoint_dir, group.name) if checkpoint_dir else None
+    best_val_loss, from_checkpoint = trainer.train(train_data, val_data, fold_checkpoint_dir, fold_id)
+    
+    time_grid = full_data.time_grid
+    predictions = trainer.predict(test_data, time_grid, use_mc=use_mc)
+    
+    eps = 1e-100
+    pred_hazard = predictions.get('log_hazard')
+    pred_density_raw = predictions.get('log_density')
+    
+    if pred_density_raw is not None:
+        pred_density = torch.exp(pred_density_raw)
+    else:
+        pred_density = None
+    
+    metrics = compute_all_metrics(
+        times=test_data.times,
+        events=test_data.events,
+        risk_scores=predictions['risk_scores'],
+        pred_survival=predictions['survival'],
+        pred_medians=predictions['medians'],
+        time_grid=time_grid,
+        true_hazard=torch.log(torch.clamp(test_data.true_hazard, min=eps)) if test_data.true_hazard is not None else None,
+        true_density=test_data.true_density if test_data.true_density is not None else None,
+        true_survival=test_data.true_survival,
+        true_medians=true_medians,
+        pred_hazard=pred_hazard,
+        pred_density=pred_density,
+        quantiles=config.experiment.time_quantiles,
+        max_weight=config.experiment.ipcw_max_weight
+    )
+    
+    info = {
+        'group_name': group.name,
+        'model_name': model_name,
+        'fold_id': fold_id,
+        'seed': seed,
+        'n_train': len(train_data.times),
+        'n_val': len(val_data.times),
+        'n_test': len(test_data.times),
+        'actual_censoring_rate': 1 - test_data.events.mean(),
+        'from_checkpoint': from_checkpoint,
+        'best_val_loss': best_val_loss,
+    }
+    
+    return metrics, predictions, info
+
+
+def run_cv_experiments(
+    config: 'GlobalConfig',
+    model_names: Optional[List[str]] = None,
+    group_names: Optional[List[str]] = None,
+    n_folds: int = 5,
+    save_results: bool = True,
+    output_dir: Optional[str] = None,
+    checkpoint_dir: Optional[str] = None,
+    device: Optional[torch.device] = None,
+    use_mc: bool = False
+) -> Dict[str, Any]:
+    """
+    运行K折交叉验证实验
+    
+    与重复随机实验不同，交叉验证:
+    - 使用固定的一份数据
+    - 按规则轮流划分训练/验证/测试集
+    - 每个样本都会被作为测试集评估一次
+    
+    参数:
+        config: 全局配置对象
+        model_names: 要运行的模型列表
+        group_names: 要运行的实验组列表
+        n_folds: 折数 (默认5)
+        save_results: 是否保存结果
+        output_dir: 输出目录
+        checkpoint_dir: 检查点目录
+        device: 计算设备
+        use_mc: 是否使用蒙特卡洛采样
+    
+    返回:
+        包含所有实验结果的字典
+    """
+    from sklearn.model_selection import KFold
+    
+    if model_names is None:
+        model_names = list(config.model.configs.keys())
+    
+    if group_names is None:
+        groups = config.experiment.groups
+    else:
+        groups = [g for g in config.experiment.groups if g.name in group_names]
+    
+    if output_dir is None:
+        output_dir = config.experiment.output_dir
+    
+    if checkpoint_dir is None:
+        checkpoint_dir = 'cv_checkpoints'
+    
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    all_results = {}
+    kfold = KFold(n_splits=n_folds, shuffle=True, random_state=config.experiment.base_seed)
+    
+    total_runs = len(groups) * len(model_names) * n_folds
+    pbar = tqdm(total=total_runs, desc=f"Running {n_folds}-fold CV")
+    
+    for group in groups:
+        group_results = {}
+        
+        seed = group.data_config.random_seed
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        
+        generator = SurvivalDataGenerator(group.data_config)
+        full_data = generator.generate(n=group.data_config.n_samples, seed=seed)
+        times_np = full_data.times.cpu().numpy() if isinstance(full_data.times, torch.Tensor) else full_data.times
+        full_data = full_data.to(device)
+        
+        for model_name in model_names:
+            model_results = []
+            
+            for fold_id, (train_val_idx, test_idx) in enumerate(kfold.split(times_np)):
+                val_ratio = config.experiment.val_ratio
+                n_train_val = len(train_val_idx)
+                n_val = int(n_train_val * val_ratio)
+                
+                np.random.seed(seed + fold_id)
+                shuffled_idx = np.random.permutation(train_val_idx)
+                train_idx = shuffled_idx[n_val:]
+                val_idx = shuffled_idx[:n_val]
+                
+                try:
+                    metrics, predictions, info = run_cv_single_experiment(
+                        group, model_name, fold_id, train_idx, val_idx, test_idx,
+                        full_data, config, checkpoint_dir, device, use_mc
+                    )
+                    
+                    model_results.append({
+                        'metrics': metrics_to_dict(metrics),
+                        'info': info
+                    })
+                    
+                    if info.get('from_checkpoint'):
+                        pbar.set_postfix_str(f"loaded from checkpoint")
+                
+                except Exception as e:
+                    print(f"\nError in {group.name}/{model_name}/fold_{fold_id}: {e}")
+                    model_results.append({
+                        'metrics': None,
+                        'error': str(e)
+                    })
+                
+                pbar.update(1)
+            
+            group_results[model_name] = model_results
+        
+        all_results[group.name] = group_results
+    
+    pbar.close()
+    
+    if save_results:
+        results_file = os.path.join(output_dir, 'cv_results.json')
+        with open(results_file, 'w', encoding='utf-8') as f:
+            json.dump(all_results, f, indent=2, ensure_ascii=False, default=str)
+        print(f"\nResults saved to {results_file}")
+        save_results_to_csv(all_results, output_dir)
+    
     return all_results
 
 
@@ -1080,7 +1350,7 @@ def save_results_to_csv(results: Dict[str, Any], output_dir: str):
             metric_cols.append(f'{metric}')
             metric_cols.append(f'{metric}_std')
         
-        fieldnames = ['group', 'model'] + metric_cols
+        fieldnames = ['group', 'model', *metric_cols]
         
         with open(aggregated_file, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)

@@ -2,10 +2,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Union, Optional, Dict, Tuple
+from typing import Optional
 
 from models.flowmodel.base_flow import FlowSurv
-from models.flowmodel.components import FiLMResidualBlock, odeint_euler, odeint_rk4
+from models.flowmodel.components import odeint_euler, odeint_rk4
 
 
 class GumbelFlowSurv(FlowSurv):
@@ -20,7 +20,7 @@ class GumbelFlowSurv(FlowSurv):
 
     def __init__(self, in_dim: int, config: Optional[dict] = None, **kwargs):
         super().__init__(in_dim, config, **kwargs)
-        self.stage = self.config.get('stage', 'flow')
+        self._stage = 'gumbel'
 
         z_dim = self.encoder_dims[-1]
         gumbel_layers = []
@@ -30,14 +30,14 @@ class GumbelFlowSurv(FlowSurv):
             prev = d
         gumbel_layers.append(nn.Linear(prev, 2))
         self.gumbel_head = nn.Sequential(*gumbel_layers)
+        
+        self._set_stage('gumbel')
 
-        self.set_stage(self.stage)
-
-    def set_stage(self, stage: str):
-        if stage not in {'weibull', 'flow'}:
+    def _set_stage(self, stage: str):
+        if stage not in {'gumbel', 'flow'}:
             raise ValueError(f"Unknown stage: {stage}")
-        self.stage = stage
-        if stage == 'weibull':
+        self._stage = stage
+        if stage == 'gumbel':
             self.encoder.requires_grad_(True)
             self.gumbel_head.requires_grad_(True)
             self.film_head.requires_grad_(False)
@@ -47,6 +47,9 @@ class GumbelFlowSurv(FlowSurv):
             self.gumbel_head.requires_grad_(False)
             self.film_head.requires_grad_(True)
             self.vector_field.requires_grad_(True)
+    
+    def set_stage(self, stage: str):
+        self._set_stage(stage)
 
     def _gumbel_params(self, z: torch.Tensor):
         params = self.gumbel_head(z)
@@ -59,19 +62,26 @@ class GumbelFlowSurv(FlowSurv):
     def get_gumbel_params(self, x: torch.Tensor, z: Optional[torch.Tensor] = None):
         if z is None:
             z = self.encoder(x)
-        z_gumbel = z.detach() if self.stage == 'flow' else z
+        z_gumbel = z.detach() if self._stage == 'flow' else z
         alpha, beta = self._gumbel_params(z_gumbel)
         return alpha, beta
 
     def init_gumbel_params(self, times: torch.Tensor, events: torch.Tensor):
         t_norm = self._to_normalized_time(times)
-        mu = t_norm.mean().item()
-        sigma = t_norm.std().item()
+        
+        event_mask = (events == 1)
+        if event_mask.any():
+            t_event = t_norm[event_mask]
+            mu = t_event.mean().item()
+            sigma = t_event.std().item()
+        else:
+            mu = t_norm.mean().item()
+            sigma = t_norm.std().item()
         
         gamma = 0.57721
         sqrt_6 = math.sqrt(6.0)
         
-        beta_init = sigma * sqrt_6 / math.pi
+        beta_init = max(sigma * sqrt_6 / math.pi, 0.1)
         alpha_init = mu - beta_init * gamma
         
         with torch.no_grad():
@@ -102,7 +112,7 @@ class GumbelFlowSurv(FlowSurv):
     def forward_loss(self, features: torch.Tensor, times_raw: torch.Tensor, events: torch.Tensor, **kwargs):
         device = features.device
         t1 = self._to_normalized_time(times_raw).float().unsqueeze(-1)
-        if self.stage == 'weibull':
+        if self._stage == 'gumbel':
             z = self.encoder(features)
             alpha, beta = self._gumbel_params(z)
             log_prob = self.log_prob_prior(t1, alpha, beta)
@@ -145,7 +155,8 @@ class GumbelFlowSurv(FlowSurv):
             mod_cens = mod_params[censored_mask]
             alpha_cens = alpha[censored_mask]
             beta_cens = beta[censored_mask]
-            t_truncated = self._sample_truncated_exponential(t_obs, self.truncated_samples)
+            beta_rate = torch.clamp(1.0 / beta_cens, min=0.1, max=10.0)
+            t_truncated = self._sample_truncated_exponential(t_obs, self.truncated_samples, rate=beta_rate)
             n_total = t_truncated.numel()
             t1_flat = t_truncated.view(-1, 1)
             tau = torch.rand(n_total, device=device)
@@ -170,7 +181,9 @@ class GumbelFlowSurv(FlowSurv):
             alpha, beta = self.get_gumbel_params(features, z=z)
             B = features.size(0)
             device = features.device
-            n_samples = self.n_samples if mode != 'ode_step' else 1
+            n_samples = self.mc_samples if self.use_mc else self.n_samples
+            if mode == 'ode_step':
+                n_samples = 1
             if mode == 'ode_step':
                 log_log_2 = alpha.new_tensor(self._LN_LN_2)
                 t0 = alpha + beta * log_log_2
@@ -287,3 +300,81 @@ class GumbelFlowSurv(FlowSurv):
         s_full = torch.clamp(s_full, min=0.0, max=1.0)
         
         return s_full[:, 1:] if add_zero else s_full
+
+    def predict_survival_function_mc(self, features: torch.Tensor, time_grid: torch.Tensor,
+                                      n_samples: Optional[int] = None) -> torch.Tensor:
+        """
+        蒙特卡洛采样法计算生存函数 S(t|x) - Gumbel先验版本
+        
+        参数:
+            features: (N, D) 特征张量
+            time_grid: (T,) 时间点网格
+            n_samples: 采样数量
+            
+        返回:
+            (N, T) 生存函数 S(t|x)
+        """
+        self.eval()
+        device = features.device
+        time_grid = time_grid.to(device)
+        B = features.size(0)
+        n_samples = n_samples or self.mc_samples
+        
+        with torch.no_grad():
+            z = self.encoder(features)
+            mod_params = self.film_head(z)
+            alpha, beta = self.get_gumbel_params(features, z=z)
+            
+            mod_ext = mod_params.repeat_interleave(n_samples, dim=0)
+            alpha_ext = alpha.repeat_interleave(n_samples, dim=0)
+            beta_ext = beta.repeat_interleave(n_samples, dim=0)
+            
+            z0 = self.sample_prior((B * n_samples, 1), device, alpha_ext, beta_ext)
+            
+            t_samples_norm = self._forward_flow_samples(z0, mod_ext)
+            t_samples = self._to_original_time(t_samples_norm.squeeze(-1))
+            t_samples = t_samples.view(B, n_samples)
+            
+            time_grid_exp = time_grid.unsqueeze(0).unsqueeze(2)
+            t_samples_exp = t_samples.unsqueeze(1)
+            S = (t_samples_exp > time_grid_exp).float().mean(dim=2)
+            
+        return S
+
+    def predict_time_mc(self, features: torch.Tensor, n_samples: Optional[int] = None,
+                        mode: str = 'median') -> torch.Tensor:
+        """
+        蒙特卡洛采样法计算中位生存时间 - Gumbel先验版本
+        
+        参数:
+            features: (N, D) 特征张量
+            n_samples: 采样数量
+            mode: 'median' 或 'mean'
+            
+        返回:
+            (N,) 中位/平均生存时间
+        """
+        self.eval()
+        device = features.device
+        B = features.size(0)
+        n_samples = n_samples or self.mc_samples
+        
+        with torch.no_grad():
+            z = self.encoder(features)
+            mod_params = self.film_head(z)
+            alpha, beta = self.get_gumbel_params(features, z=z)
+            
+            mod_ext = mod_params.repeat_interleave(n_samples, dim=0)
+            alpha_ext = alpha.repeat_interleave(n_samples, dim=0)
+            beta_ext = beta.repeat_interleave(n_samples, dim=0)
+            
+            z0 = self.sample_prior((B * n_samples, 1), device, alpha_ext, beta_ext)
+            
+            t_samples_norm = self._forward_flow_samples(z0, mod_ext)
+            t_samples = self._to_original_time(t_samples_norm.squeeze(-1))
+            t_samples = t_samples.view(B, n_samples)
+            
+            if mode == 'median':
+                return t_samples.median(dim=1)[0]
+            else:
+                return t_samples.mean(dim=1)

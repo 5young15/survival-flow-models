@@ -33,17 +33,17 @@ class SurvivalModelInterface(ABC):
             time_grid = time_grid.to(features.device)
 
         # 处理基线风险用于只能计算相对风险的模型
-        if not hasattr(self, '_baseline_cumulative_hazard') or self._baseline_cumulative_hazard is None:
-            warnings.warn("Baseline hazard not fitted; returning S(t)=1 for all samples.", UserWarning)
+        if not hasattr(self, '_baseline_cum_haz') or self._baseline_cum_haz is None:
+            warnings.warn("Baseline hazard not fitted; returning S(t)=1 for all samples.", UserWarning, stacklevel=2)
             grid = time_grid if time_grid is not None else torch.tensor([0.0], device=features.device)
             return torch.ones((features.shape[0], len(grid)), device=features.device)
 
-        # cox比例风险模型 计算风险比 HR = exp(h(t|X))
+        # cox 比例风险模型 计算风险比 HR = exp(h(t|X))
         log_haz = self.predict_risk(features)
         exp_haz = torch.exp(torch.clamp(log_haz, max=88.0))
 
         baseline_times = self._baseline_times.to(features.device)
-        baseline_cum_haz = self._baseline_cumulative_hazard.to(features.device)
+        baseline_cum_haz = self._baseline_cum_haz.to(features.device)
         grid = time_grid if time_grid is not None else baseline_times
 
         indices = torch.searchsorted(baseline_times, grid)
@@ -128,6 +128,8 @@ class TorchSurvivalModel(nn.Module, SurvivalModelInterface):
             t_norm = (t_raw - self.time_scaler_mean) / (self.time_scaler_std + 1e-8)
         return t_norm
 
+# ===========================================以下为部分共有函数=============================================================
+    
     # Cox模型 估计基线累积风险函数
     def _fit_breslow_baseline_hazard(self, times: torch.Tensor, events: torch.Tensor, log_haz: torch.Tensor):
         device = self.time_scaler_mean.device
@@ -207,6 +209,7 @@ class TorchSurvivalModel(nn.Module, SurvivalModelInterface):
                 m_mid[~mask_stable] = (t1[~mask_stable] + t2[~mask_stable]) / 2
                 medians[mid] = m_mid
             return medians
+    
     # cox模型 计算对数风险函数 h(t|X) = exp(h(t|X)) - > hazard_mse
     def _cox_compute_hazard_rate(self, features: torch.Tensor, time_grid: torch.Tensor) -> torch.Tensor:
         """

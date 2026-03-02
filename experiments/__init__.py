@@ -1,4 +1,4 @@
-from config import (
+from .config import (
     DataConfig,
     ModelConfig,
     PlotConfig,
@@ -10,7 +10,7 @@ from config import (
     print_config_summary,
 )
 
-from data_generation import (
+from .data_generation import (
     SurvivalData,
     SurvivalDataGenerator,
     WeibullMixtureGenerator,
@@ -19,7 +19,7 @@ from data_generation import (
     generate_experiment_data,
 )
 
-from metrics import (
+from .metrics import (
     MetricsResult,
     concordance_index_fast,
     brier_score_at_time,
@@ -36,7 +36,7 @@ from metrics import (
     metrics_to_dict,
 )
 
-from visualization import (
+from .visualization import (
     SurvivalVisualizer,
     generate_visualization_report,
 )

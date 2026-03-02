@@ -64,32 +64,32 @@ class DataConfig:
         beta_linear: 线性协变量效应系数
         beta_nonlinear: 非线性协变量效应系数
     """
-    n_samples: int = 2000
-    n_features: int = 5
-    n_signal_features: int = 2
-    noise_std: float = 0.1
-    censoring_rate: float = 0.4
-    distribution_type: str = "weibull_mixture"
-    is_ph: bool = True
-    random_seed: int = 42
+    n_samples: int = 2000  # 样本数量
+    n_features: int = 5  # 特征总数
+    n_signal_features: int = 2  # 信号特征数量 (有预测能力)
+    noise_std: float = 0.1  # 高斯噪声标准差
+    censoring_rate: float = 0.4  # 目标删失率 (0-1)
+    distribution_type: str = "weibull_mixture"  # 分布类型: weibull_single/weibull_mixture/gaussian_mixture
+    is_ph: bool = True  # 是否满足比例风险假设
+    random_seed: int = 42  # 随机种子
     
     # Weibull 混合参数
-    weibull_k1: float = 1.5
-    weibull_k2: float = 3.0
-    weibull_lambda1_base: float = 1.0
-    weibull_lambda2_base: float = 2.0
-    mixture_weight_base: float = 0.5
+    weibull_k1: float = 1.5  # 第一个 Weibull 成分形状参数
+    weibull_k2: float = 3.0  # 第二个 Weibull 成分形状参数
+    weibull_lambda1_base: float = 1.0  # 第一个 Weibull 成分基准尺度
+    weibull_lambda2_base: float = 2.0  # 第二个 Weibull 成分基准尺度
+    mixture_weight_base: float = 0.5  # 混合权重基准值
     
     # 高斯混合参数
-    gaussian_mu1_base: float = 2.0
-    gaussian_mu2_base: float = 4.0
-    gaussian_sigma1: float = 0.5
-    gaussian_sigma2: float = 0.8
-    gaussian_mixture_weight: float = 0.5
+    gaussian_mu1_base: float = 2.0  # 第一个高斯成分均值基准
+    gaussian_mu2_base: float = 4.0  # 第二个高斯成分均值基准
+    gaussian_sigma1: float = 0.5  # 第一个高斯成分标准差
+    gaussian_sigma2: float = 0.8  # 第二个高斯成分标准差
+    gaussian_mixture_weight: float = 0.5  # 高斯混合权重
     
     # 协变量效应系数
-    beta_linear: float = 0.5
-    beta_nonlinear: float = 0.3
+    beta_linear: float = 0.5  # 线性协变量效应系数
+    beta_nonlinear: float = 0.3  # 非线性协变量效应系数
     
     def get_censoring_lambda(self) -> float:
         """
@@ -117,90 +117,140 @@ class ModelConfig:
     - 网络架构参数: snake_case (hidden_dims, dropout, n_time_bins 等)
     - 训练参数: 大写 (LR, BATCH_SIZE, EPOCHS 等)
     - 与代码中 self.config.get() 保持一致
+    
+    【蒙特卡洛算法选项】(仅适用于 Flow 系列模型)
+    - use_mc: 是否使用蒙特卡洛采样法计算生存函数
+      - False (默认): 密度积分法，通过逆流积分计算 Jacobian
+      - True: 蒙特卡洛采样法，通过正向 ODE 采样估计 S(t)
+    - mc_samples: 蒙特卡洛采样数量，越大越精确但计算越慢
     """
     configs: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
         'LinearCoxPH': {
-            'penalizer': 1e-5,
+            'penalizer': 1e-5,  # L2 正则化系数
         },
         'DeepSurv': {
-            'hidden_dims': [64, 32, 16, 8],
-            'dropout': 0.1,
-            'LR': 1e-4,
-            'BATCH_SIZE': 64,
-            'EPOCHS': 200,
-            'PATIENCE': 10,
-            'WEIGHT_DECAY': 1e-5,
+            'hidden_dims': [16, 16],  # 隐藏层维度
+            'dropout': 0.1,  # Dropout 比率
+            'LR': 8e-5,  # 学习率
+            'BATCH_SIZE': 64,  # 批大小
+            'EPOCHS': 200,  # 训练轮数
+            'PATIENCE': 10,  # 早停耐心值
+            'WEIGHT_DECAY': 1e-5,  # 权重衰减
         },
         'WeibullAFT': {
-            'hidden_dims': [32, 16],
-            'dropout': 0.0,
-            'LR': 5e-5,
-            'BATCH_SIZE': 64,
-            'EPOCHS': 200,
-            'PATIENCE': 15,
-            'WEIGHT_DECAY': 1e-5,
+            'hidden_dims': [32, 16],  # 隐藏层维度
+            'dropout': 0.0,  # Dropout 比率
+            'LR': 5e-5,  # 学习率
+            'BATCH_SIZE': 64,  # 批大小
+            'EPOCHS': 200,  # 训练轮数
+            'PATIENCE': 15,  # 早停耐心值
+            'WEIGHT_DECAY': 1e-5,  # 权重衰减
         },
         'RSF': {
-            'n_estimators': 100,
-            'max_depth': 10,  # 限制深度以减少大样本下的内存占用
-            'min_samples_split': 10,
-            'min_samples_leaf': 5,
-            'random_state': 42,
-            'n_jobs': 4,      # 限制并行数以减少内存峰值
+            'n_estimators': 100,  # 决策树数量
+            'max_depth': 10,  # 最大深度 (限制深度以减少大样本内存占用)
+            'min_samples_split': 10,  # 节点分裂最小样本数
+            'min_samples_leaf': 5,  # 叶节点最小样本数
+            'random_state': 42,  # 随机种子
+            'n_jobs': 4,  # 并行数 (限制以减少内存峰值)
         },
         'DeepHit': {
-            'hidden_dims': [32, 16, 8],
-            'dropout': 0.1,
-            'n_time_bins': 50,
-            'LR': 5e-8,
-            'BATCH_SIZE': 64,
-            'EPOCHS': 200,
-            'PATIENCE': 10,
-            'WEIGHT_DECAY': 1e-5,
+            'hidden_dims': [32, 16, 8],  # 隐藏层维度
+            'dropout': 0.1,  # Dropout 比率
+            'n_time_bins': 50,  # 时间离散化箱数
+            'LR': 5e-8,  # 学习率
+            'BATCH_SIZE': 64,  # 批大小
+            'EPOCHS': 200,  # 训练轮数
+            'PATIENCE': 10,  # 早停耐心值
+            'WEIGHT_DECAY': 1e-5,  # 权重衰减
         },
         'FlowSurv': {
-            'vf_hidden_dims': [32, 16, 8],
-            'tau_dim': 32,
-            'encoder_hidden': [32, 16],
-            'film_hidden': [16],
-            'sigma': 0.1,
-            'dropout': 0.1,
-            'LR': 1e-4,
-            'BATCH_SIZE': 64,
-            'EPOCHS': 200,
-            'PATIENCE': 10,
-            'WEIGHT_DECAY': 1e-5,
-            'n_samples': 256,
-            'ode_steps': 100,
-            'solver': 'euler',
-            'truncated_samples': 32,
-            'weight_event': 2.0,
-            'weight_censored': 1.0,
+            'vf_hidden_dims': [16, 16],  # 向量场网络隐藏层维度
+            'tau_dim': 32,  # 时间嵌入维度
+            'encoder_hidden': [32, 16],  # 特征编码器隐藏层
+            'film_hidden': [16],  # FiLM 调制网络隐藏层
+
+            'dropout': 0.1,  # Dropout 比率
+
+            'LR': 8e-5,  # 学习率
+            'BATCH_SIZE': 64,  # 批大小
+            'EPOCHS': 200,  # 训练轮数
+            'PATIENCE': 10,  # 早停耐心值
+            'WEIGHT_DECAY': 1e-5,  # 权重衰减
+            'sigma': 0.1,  # 流模型噪声标准差
+
+            'n_samples': 512,  # 预测t时采样数 (use_mc=False 时使用)
+            'ode_steps': 100,  # ODE 积分步数
+            'solver': 'rk4',  # ODE 求解器: euler/rk4/dopri5
+
+            'truncated_samples': 32,  # 截断采样数 (删失样本训练)
+            'weight_event': 1.0,  # 事件样本权重
+            'weight_censored': 1.0,  # 删失样本权重
+
+            'use_mc': False,  # 是否使用蒙特卡洛采样法 (True时用mc_samples)
+            'mc_samples': 5000,  # 蒙特卡洛采样数量 (增加到5000以提高精度)
         },
         'GumbelFlowSurv': {
-            'vf_hidden_dims': [32, 16, 8],
-            'tau_dim': 32,
-            'encoder_hidden': [32, 16],
-            'film_hidden': [16],
-            'gumbel_head_hidden': [16],
-            'sigma': 0.1,
-            'dropout': 0.1,
-            'LR': 1e-4,
-            'BATCH_SIZE': 64,
-            'EPOCHS': 200,
-            'PATIENCE': 10,
-            'WEIGHT_DECAY': 1e-5,
-            'WEIBULL_LR': 5e-5,
-            'WEIBULL_EPOCHS': 200,
-            'WEIBULL_BATCH_SIZE': 64,
-            'WEIBULL_PATIENCE': 15,
-            'WEIBULL_WEIGHT_DECAY': 1e-5,
-            'n_samples': 256,
-            'ode_steps': 100,
-            'solver': 'euler',
-            'truncated_samples': 32,
-            'weight_event': 1.0,
-            'weight_censored': 2.0,
+            'vf_hidden_dims': [16, 16],  # 向量场网络隐藏层维度
+            'tau_dim': 32,  # 时间嵌入维度
+            'encoder_hidden': [32, 16],  # 特征编码器隐藏层
+            'film_hidden': [16],  # FiLM 调制网络隐藏层
+            'gumbel_head_hidden': [16],  # Gumbel 头隐藏层
+
+            'dropout': 0.1,  # Dropout 比率
+            'LR': 8e-5,  # 学习率
+            'BATCH_SIZE': 64,  # 批大小
+            'EPOCHS': 200,  # 训练轮数
+            'PATIENCE': 10,  # 早停耐心值
+            'WEIGHT_DECAY': 1e-5,  # 权重衰减
+            'sigma': 0.1,  # 流模型噪声标准差
+            'GUMBEL_LR': 4e-5,  # Gumbel 头学习率
+            'GUMBEL_EPOCHS': 200,  # Gumbel 头训练轮数
+            'GUMBEL_BATCH_SIZE': 64,  # Gumbel 头批大小
+            'GUMBEL_PATIENCE': 15,  # Gumbel 头早停耐心值
+            'GUMBEL_WEIGHT_DECAY': 1e-5,  # Gumbel 头权重衰减
+
+            'n_samples': 512,  # 预测时采样数 (use_mc=False 时使用)
+            'ode_steps': 100,  # ODE 积分步数
+            'solver': 'rk4',  # ODE 求解器: euler/rk4/dopri5
+
+            'truncated_samples': 32,  # 截断采样数 (删失样本训练)
+            'weight_event': 1.0,  # 事件样本权重
+            'weight_censored': 1.0,  # 删失样本权重
+
+            'use_mc': False,  # 是否使用蒙特卡洛采样法 (True时用mc_samples)
+            'mc_samples': 5000,  # 蒙特卡洛采样数量 (增加到5000以提高精度)
+        },
+        'MultiGumbelFlowSurv': {
+            'vf_hidden_dims': [16, 16],  # 向量场网络隐藏层维度
+            'tau_dim': 32,  # 时间嵌入维度
+            'encoder_hidden': [32, 16],  # 特征编码器隐藏层
+            'film_hidden': [16],  # FiLM 调制网络隐藏层
+            'gumbel_head_hidden': [16],  # Gumbel 头隐藏层
+
+            'dropout': 0.1,  # Dropout 比率
+            'LR': 8e-5,  # 学习率
+            'BATCH_SIZE': 64,  # 批大小
+            'EPOCHS': 200,  # 训练轮数
+            'PATIENCE': 10,  # 早停耐心值
+            'WEIGHT_DECAY': 1e-5,  # 权重衰减
+            'sigma': 0.1,  # 流模型噪声标准差
+            'GUMBEL_LR': 5e-5,  # Gumbel 头学习率
+            'GUMBEL_EPOCHS': 200,  # Gumbel 头训练轮数
+            'GUMBEL_BATCH_SIZE': 64,  # Gumbel 头批大小
+            'GUMBEL_PATIENCE': 15,  # Gumbel 头早停耐心值
+            'GUMBEL_WEIGHT_DECAY': 1e-5,  # Gumbel 头权重衰减
+
+            'n_samples': 512,  # 预测时采样数 (use_mc=False 时使用)
+            'ode_steps': 100,  # ODE 积分步数
+            'solver': 'euler',  # ODE 求解器: euler/rk4/dopri5
+            'truncated_samples': 32,  # 截断采样数 (删失样本训练)
+            'weight_event': 1.0,  # 事件样本权重
+            'weight_censored': 1.0,  # 删失样本权重
+
+            'use_joint_loss': False,  # 是否使用联合损失
+            'use_mc': False,  # 是否使用蒙特卡洛采样法 (True时用mc_samples)
+            'mc_samples': 5000,  # 蒙特卡洛采样数量 (增加到5000以提高精度)
         },
     })
 
@@ -208,15 +258,15 @@ class ModelConfig:
 @dataclass
 class PlotConfig:
     """绘图配置"""
-    figsize_single: tuple = (8, 6)
-    figsize_multi: tuple = (14, 10)
-    dpi: int = 150
-    font_size: int = 12
-    n_representative_samples: int = 5
-    time_grid_points: int = 100
-    hazard_surface_points: int = 50
+    figsize_single: tuple = (8, 6)  # 单图尺寸
+    figsize_multi: tuple = (14, 10)  # 多图尺寸
+    dpi: int = 150  # 分辨率
+    font_size: int = 12  # 字体大小
+    n_representative_samples: int = 5  # 代表性样本数量
+    time_grid_points: int = 100  # 时间网格点数
+    hazard_surface_points: int = 50  # 风险曲面点数
     colors: Dict[str, str] = field(default_factory=lambda: {
-        'true': '#2E86AB',
+        'true': '#2E86AB',  # 真实曲线颜色
         'LinearCoxPH': '#A23B72',
         'DeepSurv': '#F18F01',
         'WeibullAFT': '#C73E1D',
@@ -224,9 +274,10 @@ class PlotConfig:
         'DeepHit': '#95C623',
         'FlowSurv': '#1B998B',
         'GumbelFlowSurv': '#E84855',
+        'MultiGumbelFlowSurv': '#6B5B95',
     })
     linestyles: Dict[str, str] = field(default_factory=lambda: {
-        'true': '-',
+        'true': '-',  # 真实曲线线型
         'LinearCoxPH': '--',
         'DeepSurv': '-.',
         'WeibullAFT': ':',
@@ -234,21 +285,22 @@ class PlotConfig:
         'DeepHit': '-.',
         'FlowSurv': '-',
         'GumbelFlowSurv': '-',
+        'MultiGumbelFlowSurv': '-',
     })
-    save_format: str = 'png'
-    save_dir: str = 'results/figures'
+    save_format: str = 'png'  # 保存格式
+    save_dir: str = 'results/figures'  # 保存目录
 
 
 @dataclass 
 class ExperimentGroup:
     """单个实验组配置"""
-    name: str
-    description: str
-    data_config: DataConfig
-    is_nph: bool = False
-    is_high_censoring: bool = False
-    is_small_sample: bool = False
-    is_high_noise: bool = False
+    name: str  # 实验组名称
+    description: str  # 实验描述
+    data_config: DataConfig  # 数据配置
+    is_nph: bool = False  # 是否为非比例风险场景
+    is_high_censoring: bool = False  # 是否为高删失场景
+    is_small_sample: bool = False  # 是否为小样本场景
+    is_high_noise: bool = False  # 是否为高噪声场景
 
 
 def _create_default_groups() -> List[ExperimentGroup]:
@@ -400,19 +452,19 @@ def _create_default_groups() -> List[ExperimentGroup]:
 @dataclass
 class ExperimentConfig:
     """实验总配置"""
-    base_seed: int = 42
-    output_dir: str = 'results'
-    save_predictions: bool = True
-    save_models: bool = False
-    n_repeats: int = 10
-    val_ratio: float = 0.1
-    test_ratio: float = 0.2
+    base_seed: int = 42  # 基础随机种子
+    output_dir: str = 'results'  # 输出目录
+    save_predictions: bool = True  # 是否保存预测结果
+    save_models: bool = False  # 是否保存模型
+    n_repeats: int = 10  # 重复实验次数
+    val_ratio: float = 0.1  # 验证集比例
+    test_ratio: float = 0.2  # 测试集比例
     
-    groups: List[ExperimentGroup] = field(default_factory=_create_default_groups)
+    groups: List[ExperimentGroup] = field(default_factory=_create_default_groups)  # 实验组列表
     
-    time_quantiles: List[float] = field(default_factory=lambda: [0.25, 0.5, 0.75])
-    ipcw_max_weight: float = 20.0
-    calibration_bins: int = 10
+    time_quantiles: List[float] = field(default_factory=lambda: [0.25, 0.5, 0.75])  # 时间分位数
+    ipcw_max_weight: float = 20.0  # IPCW 最大权重
+    calibration_bins: int = 10  # 校准箱数
 
 
 def get_model_config(model_name: str, model_config: ModelConfig = None) -> Dict[str, Any]:
@@ -425,10 +477,10 @@ def get_model_config(model_name: str, model_config: ModelConfig = None) -> Dict[
 @dataclass
 class GlobalConfig:
     """全局配置汇总"""
-    data: DataConfig = field(default_factory=DataConfig)
-    model: ModelConfig = field(default_factory=ModelConfig)
-    plot: PlotConfig = field(default_factory=PlotConfig)
-    experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
+    data: DataConfig = field(default_factory=DataConfig)  # 数据配置
+    model: ModelConfig = field(default_factory=ModelConfig)  # 模型配置
+    plot: PlotConfig = field(default_factory=PlotConfig)  # 绘图配置
+    experiment: ExperimentConfig = field(default_factory=ExperimentConfig)  # 实验配置
     
     def get_experiment_group(self, name: str) -> Optional[ExperimentGroup]:
         """根据名称获取实验组"""
